@@ -1,10 +1,10 @@
 info:
   name: Metabase DuckDB Driver
-  version: 1.0.0-SNAPSHOT-0.1.13
+  version: 1.2.1
   description: Allows Metabase to connect to DuckDB databases.
 contact-info:
-  name: Alexander Golubov
-  address: golubov.ax@yandex.ru
+  name: MotherDuck
+  address: support@motherduck.com
 driver:
   name: duckdb
   display-name: DuckDB
@@ -38,6 +38,11 @@ driver:
       type: secret
       secret-kind: password
       required: false
+    - advanced-options-start
+    - merge:
+        - additional-options
+        - display-name: Additional DuckDB connection string options
+          placeholder: 'http_keep_alive=false'
 
 init:
   - step: load-namespace

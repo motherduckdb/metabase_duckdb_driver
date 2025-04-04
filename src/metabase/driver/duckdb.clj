@@ -49,11 +49,11 @@
           (throw (ex-info "Could not load either premium features namespace"
                           {:error e})))))))
 
-(defn is-hosted?  []
+(defn- is-hosted?  []
   (let [premium-feature-ns (find-ns premium-features-namespace)]
     ((ns-resolve premium-feature-ns 'is-hosted?))))
 
-(defn get-motherduck-token [details-map]
+(defn- get-motherduck-token [details-map]
   (try
      ;; For Metabase 0.52 or after 
     ((requiring-resolve 'metabase.models.secret/value-as-string) :duckdb details-map "motherduck_token")
@@ -63,43 +63,56 @@
               ((requiring-resolve 'metabase.models.secret/value->string)))
           ((requiring-resolve 'metabase.models.secret/get-secret-string) details-map "motherduck_token")))))
 
+(defn- database-file-path-split [database_file]
+  (let [url-parts (str/split database_file #"\?")]
+    (if (= 2 (count url-parts))
+      (let [database-file (first url-parts)
+            additional-options (second url-parts)]
+        [database-file additional-options])
+      [database_file ""])))
+
 (defn- jdbc-spec
   "Creates a spec for `clojure.java.jdbc` to use for connecting to DuckDB via JDBC from the given `opts`"
-  [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting, motherduck_token, memory_limit, azure_transport_option_type], :as details}] 
-  (-> details 
-      (merge
-       {:classname         "org.duckdb.DuckDBDriver"
-        :subprotocol       "duckdb"
-        :subname           (or database_file "")
-        "duckdb.read_only" (str read_only)
-        "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
-        "temp_directory"   (str database_file ".tmp")
-        "jdbc_stream_results" "true"
-        :TimeZone  "UTC"}
-       (when old_implicit_casting
-         {"old_implicit_casting" (str old_implicit_casting)})
-       (when memory_limit
-         {"memory_limit" (str memory_limit)})
-       (when azure_transport_option_type
-         {"azure_transport_option_type" (str azure_transport_option_type)})
-       (when allow_unsigned_extensions
-         {"allow_unsigned_extensions" (str allow_unsigned_extensions)})
-       (when (seq (re-find #"^md:" database_file))
-         {"motherduck_attach_mode"  "single"})    ;; when connecting to MotherDuck, explicitly connect to a single database
-       (when (seq motherduck_token)     ;; Only configure the option if token is provided
-         {"motherduck_token" motherduck_token})) 
-      (dissoc :database_file :read_only :port :engine :allow_unsigned_extensions :old_implicit_casting :motherduck_token :memory_limit :azure_transport_option_type)
-      sql-jdbc.common/handle-additional-options))
+  [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting, motherduck_token, memory_limit, azure_transport_option_type, attach_mode], :as details}] 
+  (let [[database_file_base database_file_additional_options] (database-file-path-split database_file)]
+    (-> details 
+        (merge
+         {:classname         "org.duckdb.DuckDBDriver"
+          :subprotocol       "duckdb"
+          :subname           (or database_file "")
+          "duckdb.read_only" (str read_only)
+          "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
+          "temp_directory"   (str database_file_base ".tmp")
+          "jdbc_stream_results" "true"
+          :TimeZone  "UTC"}
+         (when old_implicit_casting
+           {"old_implicit_casting" (str old_implicit_casting)})
+         (when memory_limit
+           {"memory_limit" (str memory_limit)})
+         (when azure_transport_option_type
+           {"azure_transport_option_type" (str azure_transport_option_type)})
+         (when allow_unsigned_extensions
+           {"allow_unsigned_extensions" (str allow_unsigned_extensions)})
+         (when (seq (re-find #"^md:" database_file))
+           {"motherduck_attach_mode"  (or attach_mode "single")})    ;; when connecting to MotherDuck, explicitly connect to a single database
+         (when (seq motherduck_token)     ;; Only configure the option if token is provided
+           {"motherduck_token" motherduck_token})
+         (sql-jdbc.common/additional-options->map (:additional-options details) :url) 
+         (sql-jdbc.common/additional-options->map database_file_additional_options :url))
+        ;; remove fields from the metabase config that do not directly go into the jdbc spec
+        (dissoc :database_file :read_only :port :engine :allow_unsigned_extensions 
+                :old_implicit_casting :motherduck_token :memory_limit :azure_transport_option_type 
+                :advanced-options :additional-options :attach_mode))))
 
 (defn- remove-keys-with-prefix [details prefix]
   (apply dissoc details (filter #(str/starts-with? (name %) prefix) (keys details))))
 
 (defmethod sql-jdbc.conn/connection-details->spec :duckdb
   [_ details-map]
-  (-> details-map
-      (merge {:motherduck_token (get-motherduck-token details-map)})
-      (remove-keys-with-prefix "motherduck_token-")
-      jdbc-spec))
+   (-> details-map
+              (merge {:motherduck_token (get-motherduck-token details-map)})
+              (remove-keys-with-prefix "motherduck_token-")
+              jdbc-spec))
 
 (defmethod sql-jdbc.execute/do-with-connection-with-options :duckdb
   [driver db-or-id-or-spec {:keys [^String session-timezone report-timezone] :as options} f]
@@ -308,13 +321,14 @@
   [driver database]
   (let
    [database_file (get (get database :details) :database_file)
+    database_file (first (database-file-path-split database_file))  ;; remove additional options in connection string
     get_tables_query (str "select * from information_schema.tables "
                                ;; Additionally filter by db_name if connecting to MotherDuck, since
                                ;; multiple databases can be attached and information about the
                                ;; non-target database will be present in information_schema. 
                           (if (is_motherduck database_file)
-                            (let [db_name (motherduck_db_name database_file)]
-                              (format "where table_catalog = '%s' " db_name))
+                            (let [db_name_without_md (motherduck_db_name database_file)]
+                              (format "where table_catalog = '%s' " db_name_without_md))
                             ""))]
     {:tables
      (sql-jdbc.execute/do-with-connection-with-options
@@ -329,6 +343,7 @@
 (defmethod driver/describe-table :duckdb
   [driver database {table_name :name, schema :schema}]
   (let [database_file (get (get database :details) :database_file)
+        database_file (first (database-file-path-split database_file))  ;; remove additional options in connection string
         get_columns_query (str
                            (format
                             "select * from information_schema.columns where table_name = '%s' and table_schema = '%s'"
@@ -337,8 +352,8 @@
                                   ;; multiple databases can be attached and information about the
                                   ;; non-target database will be present in information_schema. 
                            (if (is_motherduck database_file)
-                             (let [db_name (motherduck_db_name database_file)]
-                               (format "and table_catalog = '%s' " db_name))
+                             (let [db_name_without_md (motherduck_db_name database_file)]
+                               (format "and table_catalog = '%s' " db_name_without_md))
                              ""))]
     {:name   table_name
      :schema schema
