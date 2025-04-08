@@ -49,11 +49,11 @@
           (throw (ex-info "Could not load either premium features namespace"
                           {:error e})))))))
 
-(defn is-hosted?  []
+(defn- is-hosted?  []
   (let [premium-feature-ns (find-ns premium-features-namespace)]
     ((ns-resolve premium-feature-ns 'is-hosted?))))
 
-(defn get-motherduck-token [details-map]
+(defn- get-motherduck-token [details-map]
   (try
      ;; For Metabase 0.52 or after 
     ((requiring-resolve 'metabase.models.secret/value-as-string) :duckdb details-map "motherduck_token")
@@ -73,7 +73,8 @@
 
 (defn- jdbc-spec
   "Creates a spec for `clojure.java.jdbc` to use for connecting to DuckDB via JDBC from the given `opts`"
-  [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting, motherduck_token, memory_limit, azure_transport_option_type], :as details}] 
+  [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting, 
+           motherduck_token, memory_limit, azure_transport_option_type, attach_mode], :as details}] 
   (let [[database_file_base database_file_additional_options] (database-file-path-split database_file)]
     (-> details 
         (merge
@@ -94,7 +95,10 @@
          (when allow_unsigned_extensions
            {"allow_unsigned_extensions" (str allow_unsigned_extensions)})
          (when (seq (re-find #"^md:" database_file))
-           {"motherduck_attach_mode"  "single"})    ;; when connecting to MotherDuck, explicitly connect to a single database
+            ;; attach_mode option is not settable the user, it's always single mode when 
+            ;; using motherduck, but in tests we need to be able to connect to motherduck in 
+            ;; workspace mode, so it's handled here.
+           {"motherduck_attach_mode"  (or attach_mode "single")})    ;; when connecting to MotherDuck, explicitly connect to a single database
          (when (seq motherduck_token)     ;; Only configure the option if token is provided
            {"motherduck_token" motherduck_token})
          (sql-jdbc.common/additional-options->map (:additional-options details) :url) 
@@ -102,7 +106,7 @@
         ;; remove fields from the metabase config that do not directly go into the jdbc spec
         (dissoc :database_file :read_only :port :engine :allow_unsigned_extensions 
                 :old_implicit_casting :motherduck_token :memory_limit :azure_transport_option_type 
-                :advanced-options :additional-options))))
+                :advanced-options :additional-options :attach_mode))))
 
 (defn- remove-keys-with-prefix [details prefix]
   (apply dissoc details (filter #(str/starts-with? (name %) prefix) (keys details))))

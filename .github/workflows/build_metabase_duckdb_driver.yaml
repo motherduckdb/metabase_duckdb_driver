@@ -57,10 +57,20 @@ jobs:
         name: metabase-duckdb-driver
         path: metabase/resources/modules/duckdb.metabase-driver.jar
         if-no-files-found: error
-       
-    - name: Run integration tests
+        
+    - name: Run integration tests against MotherDuck
       working-directory: ./metabase
+      continue-on-error: true
+      env:
+          motherduck_token: ${{ secrets.motherduck_ci_user_token }}
       run: |
         git apply ./modules/drivers/duckdb/ci/metabase_test_deps.patch
         MB_EDITION=ee yarn build-static-viz
+        DRIVERS=motherduck clojure -X:dev:drivers:drivers-dev:ee:ee-dev:test
+       
+    - name: Run integration tests against DuckDB local
+      working-directory: ./metabase
+      continue-on-error: true
+      run: |
         DRIVERS=duckdb clojure -X:dev:drivers:drivers-dev:ee:ee-dev:test
+
