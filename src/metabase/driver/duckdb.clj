@@ -9,7 +9,7 @@
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
    [metabase.driver.sql-jdbc.execute :as sql-jdbc.execute]
    [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
-   [metabase.driver.sql.query-processor :as sql.qp]
+   [metabase.driver.sql.query-processor :as sql.qp] 
    [metabase.util.honey-sql-2 :as h2x]
    [metabase.util.log :as log])
   (:import
@@ -29,11 +29,12 @@
 (driver/register! :duckdb, :parent :sql-jdbc)
 
 (doseq [[feature supported?] {:metadata/key-constraints      false  ;; fetching metadata about foreign key constraints is not supported, but JOINs generally are.
-                              :upload-with-auto-pk           false}]
+                              :upload-with-auto-pk           false
+                              :datetime-diff                 true}]
   (defmethod driver/database-supports? [:duckdb feature] [_driver _feature _db] supported?))
 
 (defmethod sql-jdbc.conn/data-source-name :duckdb
-  [_driver details] 
+  [_driver details]
   ((some-fn :database_file)
    details))
 
@@ -73,9 +74,9 @@
 
 (defn- jdbc-spec
   "Creates a spec for `clojure.java.jdbc` to use for connecting to DuckDB via JDBC from the given `opts`"
-  [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting, motherduck_token, memory_limit, azure_transport_option_type], :as details}] 
+  [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting, motherduck_token, memory_limit, azure_transport_option_type], :as details}]
   (let [[database_file_base database_file_additional_options] (database-file-path-split database_file)]
-    (-> details 
+    (-> details
         (merge
          {:classname         "org.duckdb.DuckDBDriver"
           :subprotocol       "duckdb"
@@ -97,11 +98,11 @@
            {"motherduck_attach_mode"  "single"})    ;; when connecting to MotherDuck, explicitly connect to a single database
          (when (seq motherduck_token)     ;; Only configure the option if token is provided
            {"motherduck_token" motherduck_token})
-         (sql-jdbc.common/additional-options->map (:additional-options details) :url) 
+         (sql-jdbc.common/additional-options->map (:additional-options details) :url)
          (sql-jdbc.common/additional-options->map database_file_additional_options :url))
         ;; remove fields from the metabase config that do not directly go into the jdbc spec
-        (dissoc :database_file :read_only :port :engine :allow_unsigned_extensions 
-                :old_implicit_casting :motherduck_token :memory_limit :azure_transport_option_type 
+        (dissoc :database_file :read_only :port :engine :allow_unsigned_extensions
+                :old_implicit_casting :motherduck_token :memory_limit :azure_transport_option_type
                 :advanced-options :additional-options))))
 
 (defn- remove-keys-with-prefix [details prefix]
@@ -109,10 +110,10 @@
 
 (defmethod sql-jdbc.conn/connection-details->spec :duckdb
   [_ details-map]
-   (-> details-map
-              (merge {:motherduck_token (get-motherduck-token details-map)})
-              (remove-keys-with-prefix "motherduck_token-")
-              jdbc-spec))
+  (-> details-map
+      (merge {:motherduck_token (get-motherduck-token details-map)})
+      (remove-keys-with-prefix "motherduck_token-")
+      jdbc-spec))
 
 (defmethod sql-jdbc.execute/do-with-connection-with-options :duckdb
   [driver db-or-id-or-spec {:keys [^String session-timezone report-timezone] :as options} f]
@@ -266,6 +267,38 @@
 (defmethod sql.qp/date [:duckdb :quarter]         [_ _ expr] [:date_trunc (h2x/literal :quarter) expr])
 (defmethod sql.qp/date [:duckdb :quarter-of-year] [_ _ expr] [:quarter expr])
 (defmethod sql.qp/date [:duckdb :year]            [_ _ expr] [:date_trunc (h2x/literal :year) expr])
+
+(defmethod sql.qp/datetime-diff [:duckdb :year]
+  [_driver _unit x y]
+  [:datesub (h2x/literal :year) (h2x/cast "date" x) (h2x/cast "date" y)])
+
+(defmethod sql.qp/datetime-diff [:duckdb :quarter]
+  [_driver _unit x y]
+  [:datesub (h2x/literal :quarter) (h2x/cast "date" x) (h2x/cast "date" y)])
+
+(defmethod sql.qp/datetime-diff [:duckdb :month]
+  [_driver _unit x y]
+  [:datesub (h2x/literal :month) (h2x/cast "date" x) (h2x/cast "date" y)])
+
+(defmethod sql.qp/datetime-diff [:duckdb :week]
+  [_driver _unit x y]
+  (h2x// [:datesub (h2x/literal :day) (h2x/cast "date" x) (h2x/cast "date" y)] 7))
+
+(defmethod sql.qp/datetime-diff [:duckdb :day]
+  [_driver _unit x y]
+  [:datesub (h2x/literal :day) (h2x/cast "date" x) (h2x/cast "date" y)])
+
+(defmethod sql.qp/datetime-diff [:duckdb :hour]
+  [_driver _unit x y]
+  [:datesub (h2x/literal :hour) x y])
+
+(defmethod sql.qp/datetime-diff [:duckdb :minute]
+  [_driver _unit x y]
+  [:datesub (h2x/literal :minute) x y])
+
+(defmethod sql.qp/datetime-diff [:duckdb :second]
+  [_driver _unit x y]
+  [:datesub (h2x/literal :second) x y])
 
 (defmethod sql.qp/unix-timestamp->honeysql [:duckdb :seconds]
   [_ _ expr]
