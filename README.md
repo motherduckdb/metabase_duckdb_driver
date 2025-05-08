@@ -6,7 +6,7 @@ This driver is supported by [MotherDuck](https://motherduck.com/). If you would 
 
 ## DuckDB
 
-[DuckDB](https://duckdb.org) is an in-process SQL OLAP database management. It does not run as a separate process, but completely embedded within a host process. So, it **embedds to the Metabase process** like Sqlite.
+[DuckDB](https://duckdb.org) is an in-process SQL OLAP database management. It does not run as a separate process, but completely embedded within a host process. So, it **embedds to the Metabase process** like SQLite.
 
 ## Obtaining the DuckDB Metabase driver
 
