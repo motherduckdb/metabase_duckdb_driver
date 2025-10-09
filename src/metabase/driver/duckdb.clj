@@ -396,13 +396,13 @@
   (let
    [database_file (get (get database :details) :database_file)
     database_file (first (database-file-path-split database_file))  ;; remove additional options in connection string
-    get_tables_query (str "select * from information_schema.tables "
+    get_tables_query (str "select * from information_schema.tables where table_catalog not like '__ducklake_metadata%' "
                                ;; Additionally filter by db_name if connecting to MotherDuck, since
                                ;; multiple databases can be attached and information about the
                                ;; non-target database will be present in information_schema.
                           (if (is_motherduck database_file)
                             (let [db_name_without_md (motherduck_db_name database_file)]
-                              (format "where table_catalog = '%s' " db_name_without_md))
+                              (format "and table_catalog = '%s' " db_name_without_md))
                             ""))]
     {:tables
      (sql-jdbc.execute/do-with-connection-with-options
@@ -420,7 +420,7 @@
         database_file (first (database-file-path-split database_file))  ;; remove additional options in connection string
         get_columns_query (str
                            (format
-                            "select * from information_schema.columns where table_name = '%s' and table_schema = '%s'"
+                            "select * from information_schema.columns where table_name = '%s' and table_schema = '%s' and table_catalog not like '__ducklake_metadata%%' "
                             table_name schema)
                                   ;; Additionally filter by db_name if connecting to MotherDuck, since
                                   ;; multiple databases can be attached and information about the
