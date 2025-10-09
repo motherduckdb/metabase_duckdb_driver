@@ -66,7 +66,7 @@ Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase d
 See the included [Dockerfile](./Dockerfile) for a complete setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
 
 ```bash
-# Build with default versions (see Dockerfile)
+# Build with default versions (see Dockerfile for the defaults)
 docker build . --tag metabase_duckdb:latest
 
 # Build with specific versions
