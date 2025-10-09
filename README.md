@@ -61,34 +61,28 @@ ORDER BY averageRating * numVotes DESC
 
 ## Docker
 
-Unfortunately, DuckDB plugin does't work in the default Alpine based Metabase docker container due to some glibc problems. But thanks to [@ChrisH](https://github.com/ChrisH) and [@lucmartinon](https://github.com/lucmartinon) we have simple Dockerfile to create Docker image of Metabase based on Debian where the DuckDB plugin does work.
+Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Dockerfile to create a Docker image of Metabase based on Debian where the DuckDB plugin does work.
+
+See the included [Dockerfile](./Dockerfile) for a complete setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
 
 ```bash
-FROM openjdk:19-buster
+# Build with default versions (see Dockerfile)
+docker build . --tag metabase_duckdb:latest
 
-ENV MB_PLUGINS_DIR=/home/plugins/
-
-ADD https://downloads.metabase.com/v0.52.4/metabase.jar /home
-ADD https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/download/0.2.12/duckdb.metabase-driver.jar /home/plugins/
-
-RUN chmod 744 /home/plugins/duckdb.metabase-driver.jar
-
-CMD ["java", "-jar", "/home/metabase.jar"]
+# Build with specific versions
+docker build . --tag metabase_duckdb:latest \
+  --build-arg METABASE_VERSION=0.56.9 \
+  --build-arg METABASE_DUCKDB_DRIVER_VERSION=0.4.1
 ```
 
-> Note: check that you are using the latest `metabase` and `duckdb.metabase-driver` versions. See [Where to find it](#where-to-find-it) section for versions details.
-
-Build the image:
+Then start the container:
 ```bash
-docker build . --tag metaduck:latest`
+docker run --name metabase_duckdb -d -p 3000:3000 metabase_duckdb
 ```
 
-Then create the container:
-```bash
-docker run --name metaduck -d -p 80:3000 -m 2GB -e MB_PLUGINS_DIR=/home/plugins metaduck
-```
+Now open Metabase in the browser: http://localhost:3000. For detailed instructions on running the container, please see the official guide for [Running Metabase on Docker](https://www.metabase.com/docs/latest/installation-and-operation/running-metabase-on-docker).
 
-Open Metabase in the browser: http://localhost
+
 
 ### Using DB file with Docker
 
