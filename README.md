@@ -163,11 +163,7 @@ Then reference files as `/data/myfile.duckdb` or `/data/myfile.parquet`.
 
 When updating the MotherDuck token, you may see: `Connection error: Can't open a connection to same database file with a different configuration`.
 
-**Technical background:** DuckDB JDBC 1.3+ introduced a [database instance cache](https://motherduck.com/docs/troubleshooting/error_messages/) that keeps MotherDuck connections alive for 15 minutes by default. This cache keys by database name (not the full URL), so URL parameter workarounds like `?refresh=X` don't bust it.
-
-**Solution:** Add `motherduck_dbinstance_inactivity_ttl=0s` to the **Additional DuckDB connection string options** field (under Advanced options). This disables the instance cache and allows seamless token updates.
-
-**Alternative:** Restart Metabase before updating the token.
+**Solution:** Add `motherduck_dbinstance_inactivity_ttl=0s` to the connection string. This disables the instance cache and allows token updates.
 
 ## Building from source
 
@@ -178,10 +174,12 @@ Building the driver requires the Metabase source code since Metabase's build too
 Choose one of these options:
 
 **Option A: Local build (macOS/Linux)**
+
 - Java 21+ (e.g., `brew install openjdk@21` on macOS)
 - [Clojure CLI](https://clojure.org/guides/install_clojure) (e.g., `brew install clojure/tools/clojure` on macOS)
 
 **Option B: DevContainer build**
+
 - [Docker](https://www.docker.com/) installed and running
 - VS Code with [DevContainer](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension
 
@@ -208,7 +206,7 @@ metabase/duckdb {:local/root "duckdb"}
 
 ### Build
 
-**Option A: Local build**
+**Option A: local build**
 
 ```bash
 cd metabase
@@ -219,7 +217,7 @@ clojure -X:build:drivers:build/driver :driver :duckdb
 
 1. Copy the DevContainer config: `cp -r metabase_duckdb_driver/.devcontainer .`
 2. Open the `duckdb_plugin` folder in VS Code
-3. When prompted, click **Reopen in Container**
+3. When prompted, click `Reopen in Container`
 4. In the DevContainer terminal, run:
 
 ```bash
@@ -231,7 +229,7 @@ clojure -X:build:drivers:build/driver :driver :duckdb
 
 The built JAR will be at:
 
-```
+```bash
 metabase/resources/modules/duckdb.metabase-driver.jar
 ```
 
