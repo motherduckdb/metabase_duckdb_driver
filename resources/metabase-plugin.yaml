@@ -1,7 +1,7 @@
 info:
   name: Metabase DuckDB Driver
   version: 1.4.1.0
-  description: Allows Metabase to connect to DuckDB databases.
+  description: Allows Metabase to connect to DuckDB databases and MotherDuck.
 contact-info:
   name: MotherDuck
   address: support@motherduck.com
@@ -13,33 +13,33 @@ driver:
   connection-properties:
     - name: database_file
       display-name: Database file
-      placeholder: /home/to/the.duckdb (or ':memory:' for 'in memory' mode)
+      placeholder: "md:my_db, /path/to/file.duckdb, ducklake:/path/to/db.ducklake, or :memory:"
       required: false
     - name: read_only
-      display-name: Establish a read-only connection
+      display-name: Read-only mode
       default: false
       type: boolean
     - name: old_implicit_casting
-      display-name: Use DuckDB old_implicit_casting option
+      display-name: Enable old_implicit_casting (recommended for datetime filtering)
       default: true
       type: boolean
     - name: allow_unsigned_extensions
-      display-name: Allow loading unsigned extensions
+      display-name: Allow unsigned extensions
       default: false
       type: boolean
     - name: memory_limit
-      display-name: Limit on the amount of memory that DuckDB can use (e.g., 1GB), defaults to 80% of RAM
+      display-name: Memory limit (e.g., 1GB). Defaults to 80% of RAM
       required: false
     - name: azure_transport_option_type
       display-name: Azure transport option type
       required: false
     - name: motherduck_token
-      display-name: Motherduck Token
+      display-name: MotherDuck Token
       type: secret
       secret-kind: password
       required: false
     - name: init_sql
-      display-name: Init SQL (run on each new DuckDB instance)
+      display-name: Init SQL (runs on each new connection)
       type: text
       required: false
       placeholder: "INSTALL httpfs; LOAD httpfs;"
@@ -47,7 +47,7 @@ driver:
     - merge:
         - additional-options
         - display-name: Additional DuckDB connection string options
-          placeholder: 'http_keep_alive=false'
+          placeholder: "http_keep_alive=false"
 
 init:
   - step: load-namespace
