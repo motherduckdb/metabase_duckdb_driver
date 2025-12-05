@@ -10,7 +10,7 @@ jobs:
     name: Java Musllinux (amd64)
     runs-on: ubuntu-latest
     container:
-      image: alpine:latest 
+      image: alpine:3.21 
     env:
       GEN: ninja
       ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
