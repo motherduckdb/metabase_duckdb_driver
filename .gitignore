@@ -12,3 +12,4 @@ duckdb-driver.iml
 .cpcache
 .clj-kondo
 .lsp
+.direnv
