@@ -2,4 +2,4 @@
  ["src" "resources"]
 
  :deps
- {org.duckdb/duckdb_jdbc {:mvn/version "1.4.1.0"}}}
+ {org.duckdb/duckdb_jdbc {:mvn/version "1.4.3.0"}}}
