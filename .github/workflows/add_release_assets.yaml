@@ -1,0 +1,26 @@
+name: Add .jar file to a release
+
+on:
+  release:
+    types: [published]
+
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Download .jar artifact
+      uses: dawidd6/action-download-artifact@v11
+      with:
+        workflow: build_metabase_duckdb_driver.yaml
+        workflow_conclusion: success
+        commit: ${{ github.sha }}
+        name: metabase-duckdb-driver
+
+    - name: Add .jar artifact to release
+      uses: softprops/action-gh-release@v2.3.2
+      with:
+        generate_release_notes: true
+        files: duckdb.metabase-driver.jar
