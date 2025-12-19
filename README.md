@@ -1,157 +1,239 @@
 # Metabase DuckDB Driver
 
-The Metabase DuckDB driver allows [Metabase](https://www.metabase.com/) ([GitHub](https://github.com/metabase/metabase)) to use the embedded [DuckDB](https://duckdb.org/) ([GitHub](https://github.com/duckdb/duckdb)) database.
+The Metabase DuckDB driver allows [Metabase](https://www.metabase.com/) ([GitHub](https://github.com/metabase/metabase)) to connect to [DuckDB](https://duckdb.org/) databases and [MotherDuck](https://motherduck.com/).
 
-This driver is supported by [MotherDuck](https://motherduck.com/). If you would like to open a GitHub issue to report a bug or request new features, or would like to open a pull requests against it, please do so in this repository, and not in the core Metabase GitHub repository.
+This driver is supported by [MotherDuck](https://motherduck.com/). File issues or pull requests in this repository, not in the core Metabase GitHub repository.
 
-## DuckDB
+## About DuckDB
 
-[DuckDB](https://duckdb.org) is an in-process SQL OLAP database management. It does not run as a separate process, but completely embedded within a host process. So, it **embedds to the Metabase process** like SQLite.
+[DuckDB](https://duckdb.org) is an in-process SQL OLAP database. It does not run as a separate process, but embeds directly within the host process—in this case, Metabase itself (similar to SQLite).
 
-## Obtaining the DuckDB Metabase driver
+## Installation
 
-### Where to find it
+### Where to find the driver
 
-[Click here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest) to view the latest release of the Metabase DuckDB driver; click the link to download `duckdb.metabase-driver.jar`.
+Download the latest `duckdb.metabase-driver.jar` from the [releases page](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest).
 
-You can find past releases of the DuckDB driver [here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases), and releases earlier than 0.2.6 (corresponding to DuckDB v0.10.0) [here](https://github.com/AlexR2D2/metabase_duckdb_driver/releases).
+You can find [past releases](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases), and [releases earlier than 0.2.6](https://github.com/AlexR2D2/metabase_duckdb_driver/releases) (DuckDB v0.10.0) on GitHub.
 
-### How to Install it
+### Installing the driver
 
-Metabase will automatically make the DuckDB driver available if it finds the driver in the Metabase plugins directory when it starts up.
-All you need to do is create the directory `plugins` (if it's not already there), move the JAR you just downloaded into it, and restart Metabase.
+Metabase automatically loads the DuckDB driver if it finds the JAR in the plugins directory at startup. Download the JAR and place it in the plugins directory. Examples:
 
-By default, the plugins directory is called `plugins`, and lives in the same directory as the Metabase JAR.
-
-For example, if you're running Metabase from a directory called `/app/`, you should move the DuckDB driver to `/app/plugins/`:
+Standard installation:
 
 ```bash
-# example directory structure for running Metabase with DuckDB support
+# Example directory structure with DuckDB driver
 /app/metabase.jar
 /app/plugins/duckdb.metabase-driver.jar
 ```
 
-If you're running Metabase from the Mac App, the plugins directory defaults to `~/Library/Application Support/Metabase/Plugins/`:
+Mac App:
 
 ```bash
-# example directory structure for running Metabase Mac App with DuckDB support
-/Users/you/Library/Application Support/Metabase/Plugins/duckdb.metabase-driver.jar
+~/Library/Application Support/Metabase/Plugins/duckdb.metabase-driver.jar
 ```
 
-If you are running the Docker image or you want to use another directory for plugins, you should specify a custom plugins directory by setting the environment variable `MB_PLUGINS_DIR`.
+Docker or custom location: Set `MB_PLUGINS_DIR` to use a custom plugins directory.
 
-## Configuring
+> Important: Restart Metabase after adding or upgrading the driver. Hot-reload is not supported.
 
-Once you've started up Metabase, go to add a database and select "DuckDB". Provide the path to the DuckDB database file. To use DuckDB in the in-memory mode without any database file, you can specify `:memory:` as the database path. 
+## Connecting to MotherDuck
 
-## Parquet
+1. In Metabase, go to Admin Settings > Databases > Add Database
+2. Select DuckDB as the database type
+3. Configure the connection:
+   - Database file: `md:my_database` (your MotherDuck database name)
+   - MotherDuck Token: paste your token from the [MotherDuck UI](https://app.motherduck.com/)
+   - Enable old_implicit_casting: keep enabled (recommended for datetime filtering)
 
-Does it make sense to start DuckDB Database in-memory mode without any data in system like Metabase? Of Course yes!
-Because of feature of DuckDB allowing you [to run SQL queries directly on Parquet files](https://duckdb.org/2021/06/25/querying-parquet.html). So, you don't need a DuckDB database.
+> Note: DuckDB does not do implicit casting by default, so `old_implicit_casting` is required for datetime filtering in Metabase.
 
-For example (somewhere in Metabase SQL Query editor):
+## Connecting to a local DuckDB file
+
+1. Database file: enter the full path (e.g., `/path/to/database.duckdb`)
+2. Enable old_implicit_casting: recommended
+3. Read-only: toggle as needed
+
+> Note: DuckDB supports either one read/write process OR multiple read-only processes, but not both simultaneously.
+
+## In-memory mode
+
+Set the database file to `:memory:` to use DuckDB without a persistent file. This is useful for querying external files directly.
+
+### Querying Parquet files
+
+You can query Parquet files directly without a database:
 
 ```sql
-# DuckDB selected as source
-
-SELECT originalTitle, startYear, genres, numVotes, averageRating from '/Users/you/movies/title.basics.parquet' x
-JOIN (SELECT * from '/Users/you/movies/title.ratings.parquet') y ON x.tconst = y.tconst
+SELECT originalTitle, startYear, genres, numVotes, averageRating 
+FROM '/path/to/title.basics.parquet' x
+JOIN '/path/to/title.ratings.parquet' y ON x.tconst = y.tconst
 ORDER BY averageRating * numVotes DESC
 ```
 
-## Ducklake
+## DuckLake
 
-Starting from driver version 1.4.1.0, you can configure the DuckDB data source to point to a ducklake database by setting the database file field to `ducklake:/path/to/db_name.ducklake`. This will also create a folder `/path/to/db_name.ducklake.files`, where the parquet files are stored.
+Starting from driver version 1.4.1.0, you can connect to DuckLake databases.
 
-Right now, specifying alternative data path for a brand new ducklake database, like `ATTACH 'ducklake:my_other_ducklake.ducklake' AS my_other_ducklake (DATA_PATH 'some/other/path/');` is not natively supported. But you can first initialize the ducklake in SQL, using another duckdb client or within the Metabase SQL interface, with the target data path, then create the data source attaching the ducklake database already initialized with the target data path. 
+### Local DuckLake
 
-### MotherDuck-hosted Ducklake
-If you're using a ducklake database on MotherDuck, it can be attached like a regular MotherDuck database, e.g. `md:my_ducklake_database`. 
+Set the database file to `ducklake:/path/to/db_name.ducklake`. This creates a folder `/path/to/db_name.ducklake.files` for parquet storage.
 
+For custom data paths, first create the DuckLake database using another DuckDB client with your desired `DATA_PATH`, then attach it in Metabase.
+
+### MotherDuck-hosted DuckLake
+
+Connect the same way as any MotherDuck database: set database file to `md:my_ducklake_database`.
+
+### Attaching DuckLake via Init SQL
+
+For DuckLake catalogs stored externally, use Init SQL:
+
+MotherDuck-managed catalog:
+
+```sql
+ATTACH 'ducklake:md:__ducklake_metadata_mydb' AS dl;
+```
+
+Self-managed catalog with S3:
+
+```sql
+ATTACH 'ducklake:/path/to/metadata.ducklake' AS dl (DATA_PATH 's3://bucket/lake/');
+```
+
+Then query tables as `dl.my_table`.
 
 ## Docker
 
-Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Dockerfile to create a Docker image of Metabase based on Debian where the DuckDB plugin does work.
+The DuckDB driver requires glibc and doesn't work with Alpine-based images.
 
-See the included [Dockerfile](./Dockerfile) for a complete setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
+### Dockerfile
 
-```bash
-# Build with default versions (see Dockerfile for the defaults)
-docker build . --tag metabase_duckdb:latest
+Create a `Dockerfile` with the following content:
 
-# Build with specific versions
-docker build . --tag metabase_duckdb:latest \
-  --build-arg METABASE_VERSION=0.56.9 \
-  --build-arg METABASE_DUCKDB_DRIVER_VERSION=0.4.1
+```dockerfile
+FROM eclipse-temurin:21-jre
+
+ENV MB_PLUGINS_DIR=/plugins
+
+RUN mkdir -p ${MB_PLUGINS_DIR} /app
+
+# Download Metabase (use a specific version like v0.57.4 if needed)
+ADD https://downloads.metabase.com/latest/metabase.jar /app/metabase.jar
+
+# Download the latest MotherDuck DuckDB driver
+ADD https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest/download/duckdb.metabase-driver.jar ${MB_PLUGINS_DIR}/
+
+EXPOSE 3000
+
+CMD ["java", "-jar", "/app/metabase.jar"]
 ```
 
-Then start the container:
+### Build and run
+
 ```bash
+docker build . --tag metabase_duckdb:latest
 docker run --name metabase_duckdb -d -p 3000:3000 metabase_duckdb
 ```
 
-Now open Metabase in the browser: http://localhost:3000. For detailed instructions on running the container, please see the official guide for [Running Metabase on Docker](https://www.metabase.com/docs/latest/installation-and-operation/running-metabase-on-docker).
+Open Metabase at <http://localhost:3000>. See [Running Metabase on Docker](https://www.metabase.com/docs/latest/installation-and-operation/running-metabase-on-docker) for details.
 
+### Mounting local files
 
-
-### Using DB file with Docker
-
-In order to use the DuckDB database file from your local host in the docker container you should mount folder with your DB file into docker container
+To access local DuckDB or Parquet files:
 
 ```bash
-docker run -v /dir_with_my_duck_db_file_in_the_local_host/:/container/directory ...
+docker run -v /local/data:/data -p 3000:3000 metabase_duckdb
 ```
 
-Next, in the settings page of DuckDB of Metabase Web UI you could set your DB file name like this
+Then reference files as `/data/myfile.duckdb` or `/data/myfile.parquet`.
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| Driver not detected | Ensure JAR is in plugins directory and restart Metabase |
+| Connection failures | Verify database path (local) or database name + token (MotherDuck) |
+| Permission errors | Check file permissions for local databases |
+| Datetime filtering issues | Enable `old_implicit_casting` in connection settings |
+| Token update fails with "same database file" error | See token update instructions below |
+
+### Updating the MotherDuck token
+
+When updating the MotherDuck token, you may see: `Connection error: Can't open a connection to same database file with a different configuration`.
+
+Solution: Add `motherduck_dbinstance_inactivity_ttl=0s` to the connection string. This disables the instance cache and allows token updates.
+
+## Building from source
+
+Building the driver requires the Metabase source code since Metabase's build toolchain compiles the driver as an uberjar.
+
+### Prerequisites
+
+Choose one of these options:
+
+Option A: Local build (macOS/Linux)
+
+- Java 21+ (e.g., `brew install openjdk@21` on macOS)
+- [Clojure CLI](https://clojure.org/guides/install_clojure) (e.g., `brew install clojure/tools/clojure` on macOS)
+
+Option B: DevContainer build
+
+- [Docker](https://www.docker.com/) installed and running
+- VS Code with [DevContainer](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension
+
+### Setup
 
 ```bash
-/container/directory/<you_duckdb_file>
+# Create a workspace directory
+mkdir duckdb_plugin && cd duckdb_plugin
+
+# Clone repositories
+git clone https://github.com/metabase/metabase.git
+git clone https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver.git
+
+# Copy driver source into Metabase's driver directory
+mkdir -p metabase/modules/drivers/duckdb
+cp -rf metabase_duckdb_driver/* metabase/modules/drivers/duckdb/
 ```
 
-The same way you could mount the dir with parquet files into container and make SQL queries to this files using directory in your container.
+Register the driver by adding this line to `metabase/modules/drivers/deps.edn` inside the `:deps` map:
 
-## How to build the DuckDB .jar plugin yourself
+```clojure
+metabase/duckdb {:local/root "duckdb"}
+```
 
-1. Install VS Code with [DevContainer](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension (see [details](https://code.visualstudio.com/docs/devcontainers/containers))
-2. Create some folder, let's say `duckdb_plugin`
-3. Clone the `metabase_duckdb_driver` repository into `duckdb_plugin` folder
-4. Copy `.devcontainer` from `duckdb_plugin/metabase_duckdb_driver` into `duckdb_plugin`
-5. Clone the `metabase` repository of version you need into `duckdb_plugin` folder
-6. Now content of the `duckdb_plugin` folder should looks like this:
-```
-  ..
-  .devcontainer
-  metabase
-  metabase_duckdb_driver
-```
-7. Add duckdb record to the deps file `duckdb_plugin/metabase/modules/drivers/deps.edn`
-The end of the file sholud looks like this:
-```
-  ...
-  metabase/sqlserver          {:local/root "sqlserver"}
-  metabase/vertica            {:local/root "vertica"}
-  metabase/duckdb             {:local/root "duckdb"}}}  <- add this!
-```
-8. Set the DuckDB version you need in the `duckdb_plugin/metabase_duckdb_driver/deps.edn`
-9. Create duckdb driver directory in the cloned metabase sourcecode:
-```
-> mkdir -p duckdb_plugin/metabase/modules/drivers/duckdb
-```
-10. Copy the `metabase_duckdb_driver` source code into created dir
-```
-> cp -rf duckdb_plugin/metabase_duckdb_driver/* duckdb_plugin/metabase/modules/drivers/duckdb/
-```
-11. Open `duckdb_plugin` folder in VSCode using DevContainer extension (vscode will offer to open this folder using devcontainer). Wait until all stuff will be loaded. At the end you will get the terminal opened directly in the VS Code, smth like this:
-```
-vscode ➜ /workspaces/duckdb_plugin $
-```
-12. Build the plugin
-```
-vscode ➜ /workspaces/duckdb_plugin $ cd metabase
-vscode ➜ /workspaces/duckdb_plugin $ clojure -X:build:drivers:build/driver :driver :duckdb
-```
-13. jar file of DuckDB plugin will be generated here duckdb_plugin/metabase/resources/modules/duckdb.metabase-driver.jar
+### Build
 
+Option A: local build
+
+```bash
+cd metabase
+clojure -X:build:drivers:build/driver :driver :duckdb
+```
+
+Option B: DevContainer build
+
+1. Copy the DevContainer config: `cp -r metabase_duckdb_driver/.devcontainer .`
+2. Open the `duckdb_plugin` folder in VS Code
+3. When prompted, click `Reopen in Container`
+4. In the DevContainer terminal, run:
+
+```bash
+cd metabase
+clojure -X:build:drivers:build/driver :driver :duckdb
+```
+
+### Output
+
+The built JAR will be at:
+
+```bash
+metabase/resources/modules/duckdb.metabase-driver.jar
+```
+
+Copy this file to your Metabase plugins directory to install it.
 
 ## Acknowledgement
 
