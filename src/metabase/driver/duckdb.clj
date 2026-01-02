@@ -384,58 +384,60 @@
 ;; (and potentially the deletion of the local duckdb file) that results in bad_weak_ptr errors on the duckdb
 ;; connection object and deadlocks, so creating a lightweight clone of the connection to the same duckdb
 ;; instance to avoid deadlocks.
-(defn- clone-raw-connection [connection]
+(defn- clone-raw-connection [connection database]
   (let [c3p0-conn (cast com.mchange.v2.c3p0.C3P0ProxyConnection connection)
         clone-method (.getMethod org.duckdb.DuckDBConnection "duplicate" (into-array Class []))
         raw-conn-token com.mchange.v2.c3p0.C3P0ProxyConnection/RAW_CONNECTION
-        args (into-array Object [])]
-    (.rawConnectionOperation c3p0-conn clone-method raw-conn-token args)))
+        args (into-array Object [])
+        ^Connection cloned-conn (.rawConnectionOperation c3p0-conn clone-method raw-conn-token args)]
+    ;; Run init SQL on the cloned connection so that search_path and other settings are applied
+    (when-let [init-sql (-> database :details :init_sql)]
+      (when (seq (str/trim init-sql))
+        (try
+          (with-open [stmt (.createStatement cloned-conn)]
+            (.execute stmt init-sql))
+          (catch Throwable e
+            (log/errorf e "Failed to execute init SQL on cloned connection")))))
+    cloned-conn))
+
+(def ^:private search-path-filter
+  "SQL filter clause that restricts results to schemas in the search_path."
+  (str "(current_setting('search_path') IS NULL "
+         "OR current_setting('search_path') = '' "
+         "AND table_catalog = current_database() "
+         "AND table_schema = current_schema()) "
+       "OR (table_catalog || '.' || table_schema) IN ("
+       "SELECT unnest(string_split(current_setting('search_path'), ','))"
+       ")"))
 
 (defmethod driver/describe-database :duckdb
   [driver database]
-  (let
-   [database_file (get (get database :details) :database_file)
-    database_file (first (database-file-path-split database_file))  ;; remove additional options in connection string
-    get_tables_query (str "select * from information_schema.tables where table_catalog not like '__ducklake_metadata%' "
-                               ;; Additionally filter by db_name if connecting to MotherDuck, since
-                               ;; multiple databases can be attached and information about the
-                               ;; non-target database will be present in information_schema.
-                          (if (is_motherduck database_file)
-                            (let [db_name_without_md (motherduck_db_name database_file)]
-                              (format "and table_catalog = '%s' " db_name_without_md))
-                            ""))]
+  (let [get_tables_query (str "SELECT * FROM information_schema.tables WHERE table_catalog NOT LIKE '__ducklake_metadata%' AND "
+                              search-path-filter)]
     {:tables
      (sql-jdbc.execute/do-with-connection-with-options
       driver database nil
       (fn [conn]
         (set
          (for [{:keys [table_schema table_name]}
-               (jdbc/query {:connection (clone-raw-connection conn)}
+               (jdbc/query {:connection (clone-raw-connection conn database)}
                            [get_tables_query])]
            {:name table_name :schema table_schema}))))}))
 
 (defmethod driver/describe-table :duckdb
   [driver database {table_name :name, schema :schema}]
-  (let [database_file (get (get database :details) :database_file)
-        database_file (first (database-file-path-split database_file))  ;; remove additional options in connection string
-        get_columns_query (str
+  (let [get_columns_query (str
                            (format
-                            "select * from information_schema.columns where table_name = '%s' and table_schema = '%s' and table_catalog not like '__ducklake_metadata%%' "
+                            "SELECT * FROM information_schema.columns WHERE table_name = '%s' AND table_schema = '%s' AND table_catalog NOT LIKE '__ducklake_metadata%%' AND "
                             table_name schema)
-                                  ;; Additionally filter by db_name if connecting to MotherDuck, since
-                                  ;; multiple databases can be attached and information about the
-                                  ;; non-target database will be present in information_schema.
-                           (if (is_motherduck database_file)
-                             (let [db_name_without_md (motherduck_db_name database_file)]
-                               (format "and table_catalog = '%s' " db_name_without_md))
-                             ""))]
+                           search-path-filter)]
     {:name   table_name
      :schema schema
      :fields
      (sql-jdbc.execute/do-with-connection-with-options
       driver database nil
       (fn [conn] (let [results (jdbc/query
-                                {:connection (clone-raw-connection conn)}
+                                {:connection (clone-raw-connection conn database)}
                                 [get_columns_query])]
                    (set
                     (for [[idx {column_name :column_name, data_type :data_type}] (m/indexed results)]
