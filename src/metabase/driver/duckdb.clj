@@ -22,25 +22,18 @@
     Time
     Types)
    (java.time LocalDate LocalTime OffsetTime)
-   (java.time.temporal ChronoField)
-   (java.util.concurrent ConcurrentHashMap)
-   (java.util.concurrent.atomic AtomicBoolean)))
+   (java.time.temporal ChronoField)))
 
 (set! *warn-on-reflection* true)
 
-;; Thread-safe tracking of init SQL execution per database connection
-(def ^:private ^ConcurrentHashMap init-sql-states (ConcurrentHashMap.))
-
-
-;; Generate a unique key for a database connection based on its id + connection details,
-;; so when connection details change, the key changes and the init SQL is executed again
-(defn- get-database-key
-  [db-or-id-or-spec]
-  (let [details (if (map? (:details db-or-id-or-spec))
-                  (:details db-or-id-or-spec)
-                  db-or-id-or-spec)
-        id (get db-or-id-or-spec :id)]
-    (assoc details :id id)))
+(defn- split-composite-schema
+  "Splits a composite schema 'catalog.schema' into [catalog schema].
+   If there's no dot, returns [nil schema] for backwards compatibility."
+  [composite-schema]
+  (if (and composite-schema (str/includes? composite-schema "."))
+    (let [idx (str/index-of composite-schema ".")]
+      [(subs composite-schema 0 idx) (subs composite-schema (inc idx))])
+    [nil composite-schema]))
 
 (driver/register! :duckdb, :parent :sql-jdbc)
 
@@ -147,23 +140,18 @@
    db-or-id-or-spec
    options
    (fn [^Connection conn]
+     ;; Run init SQL on every connection checkout (not just once globally) because
+     ;; connection pools have multiple connections and settings like search_path
+     ;; are connection-specific. Operations like INSTALL/LOAD/SET are idempotent.
      (when (not (sql-jdbc.execute/recursive-connection?))
        (when-let [init-sql (-> db-or-id-or-spec :details :init_sql)]
          (when (seq (str/trim init-sql))
-           (let [db-key (get-database-key db-or-id-or-spec)
-                 init-state (.computeIfAbsent init-sql-states db-key
-                                            (fn [_] (AtomicBoolean. false)))]
-             ;; Ensure init SQL is executed only once
-             (when (.compareAndSet ^AtomicBoolean init-state false true)
-               (log/infof "DuckDB init SQL has not been executed for this database, executing now...")
-               (try 
-                 (with-open [stmt (.createStatement conn)]
-                   (.execute stmt init-sql)
-                   (log/tracef "Successfully executed DuckDB init SQL"))
-                 (catch Throwable e
-                   ;; If init SQL fails, reset the state so it can be retried
-                   (.set ^AtomicBoolean init-state false)
-                   (log/errorf e "Failed to execute DuckDB init SQL"))))))))
+           (try
+             (with-open [stmt (.createStatement conn)]
+               (.execute stmt init-sql)
+               (log/tracef "Successfully executed DuckDB init SQL"))
+             (catch Throwable e
+               (log/errorf e "Failed to execute DuckDB init SQL"))))))
      ;; Additionally set timezone if provided and we're not in a recursive connection
      (when (and (or report-timezone session-timezone) (not (sql-jdbc.execute/recursive-connection?)))
        (let [timezone-to-use (or report-timezone session-timezone)]
@@ -349,6 +337,81 @@
   [driver [_ arg pattern]]
   [:regexp_extract (sql.qp/->honeysql driver arg) (sql.qp/->honeysql driver pattern)])
 
+;; Override table identifier generation to handle composite "catalog.schema" schemas
+;; This produces three-part identifiers: catalog.schema.table
+(defmethod sql.qp/->honeysql [:duckdb :metadata/table]
+  [driver {:keys [schema name] :as table}]
+  (log/tracef "DuckDB :metadata/table method called! schema=%s name=%s" schema name)
+  (let [[catalog actual-schema] (split-composite-schema schema)]
+    (if catalog
+      ;; Three-part identifier: catalog.schema.table
+      (h2x/identifier :table catalog actual-schema name)
+      ;; Fall back to default behavior for non-composite schemas
+      ((get-method sql.qp/->honeysql [:sql :metadata/table]) driver table))))
+
+;; Helper function to check if an expression is an h2x identifier
+(defn- h2x-identifier?
+  "Check if expr is a HoneySQL 2 identifier vector of the form [::h2x/identifier type components]"
+  [expr]
+  (and (vector? expr)
+       (>= (count expr) 3)
+       (= (first expr) :metabase.util.honey-sql-2/identifier)))
+
+;; Helper function to split composite schemas in h2x/identifier expressions
+(defn- split-identifier-components
+  "Given identifier components, split the first one if it contains a dot."
+  [identifier-type components]
+  (if (and (vector? components)
+           (seq components)
+           (string? (first components))
+           (str/includes? (first components) ".")
+           ;; Split for both :table and :field identifiers that have schema component
+           (or (and (= identifier-type :table)
+                    (>= (count components) 2))
+               (and (= identifier-type :field)
+                    (>= (count components) 3))))
+    (let [[catalog schema] (split-composite-schema (first components))]
+      (log/tracef "Splitting composite schema: %s -> [%s %s]" (first components) catalog schema)
+      (vec (concat [catalog schema] (rest components))))
+    components))
+
+(defn- split-identifier-schema
+  "If expr is an h2x/identifier (possibly wrapped in ::typed) with a composite schema
+   (contains dot) in the first component, split it into separate catalog and schema parts."
+  [expr]
+  (cond
+    ;; Handle bare identifier: [::h2x/identifier type components]
+    (h2x-identifier? expr)
+    (let [[tag identifier-type components] expr
+          new-components (split-identifier-components identifier-type components)]
+      (if (= components new-components)
+        expr
+        (do
+          (log/tracef "Split identifier: %s -> %s" (pr-str expr) (pr-str [tag identifier-type new-components]))
+          [tag identifier-type new-components])))
+
+    ;; Handle typed expression: [::h2x/typed inner-expr type-info]
+    (and (vector? expr)
+         (= (first expr) :metabase.util.honey-sql-2/typed))
+    (let [[typed-tag inner-expr type-info] expr
+          processed-inner (split-identifier-schema inner-expr)]
+      (if (= inner-expr processed-inner)
+        expr
+        [typed-tag processed-inner type-info]))
+
+    ;; Return as-is for anything else
+    :else expr))
+
+;; Override :field to post-process identifiers and split composite schemas
+(defmethod sql.qp/->honeysql [:duckdb :field]
+  [driver field-clause]
+  (let [parent-method (get-method sql.qp/->honeysql [:sql :field])
+        result (parent-method driver field-clause)
+        processed (split-identifier-schema result)]
+    (when (not= result processed)
+      (log/tracef "DuckDB :field split result: %s -> %s" (pr-str result) (pr-str processed)))
+    processed))
+
 ;; empty result set for queries without result (like insert...)
 (defn- empty-rs []
   (reify
@@ -401,18 +464,21 @@
     cloned-conn))
 
 (def ^:private search-path-filter
-  "SQL filter clause that restricts results to schemas in the search_path."
-  (str "(current_setting('search_path') IS NULL "
+  "SQL filter clause that restricts results to schemas in the search_path.
+   IMPORTANT: This entire clause must be wrapped in outer parentheses so that
+   the internal OR conditions don't break out of the AND chain in WHERE clauses."
+  (str "((current_setting('search_path') IS NULL "
          "OR current_setting('search_path') = '' "
          "AND table_catalog = current_database() "
          "AND table_schema = current_schema()) "
        "OR (table_catalog || '.' || table_schema) IN ("
        "SELECT unnest(string_split(current_setting('search_path'), ','))"
-       ")"))
+       "))"))
 
 (defmethod driver/describe-database :duckdb
   [driver database]
-  (let [get_tables_query (str "SELECT * FROM information_schema.tables WHERE table_catalog NOT LIKE '__ducklake_metadata%' AND "
+  (let [get_tables_query (str "SELECT table_catalog || '.' || table_schema AS table_schema, table_name "
+                              "FROM information_schema.tables WHERE table_catalog NOT LIKE '__ducklake_metadata%' AND "
                               search-path-filter)]
     {:tables
      (sql-jdbc.execute/do-with-connection-with-options
@@ -426,10 +492,14 @@
 
 (defmethod driver/describe-table :duckdb
   [driver database {table_name :name, schema :schema}]
-  (let [get_columns_query (str
+  (let [[catalog actual-schema] (split-composite-schema schema)
+        catalog-filter (if catalog
+                         (format "table_catalog = '%s' AND " catalog)
+                         "")
+        get_columns_query (str
                            (format
-                            "SELECT * FROM information_schema.columns WHERE table_name = '%s' AND table_schema = '%s' AND table_catalog NOT LIKE '__ducklake_metadata%%' AND "
-                            table_name schema)
+                            "SELECT * FROM information_schema.columns WHERE table_name = '%s' AND %stable_schema = '%s' AND table_catalog NOT LIKE '__ducklake_metadata%%' AND "
+                            table_name catalog-filter actual-schema)
                            search-path-filter)]
     {:name   table_name
      :schema schema
