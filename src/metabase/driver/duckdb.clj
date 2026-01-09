@@ -22,25 +22,61 @@
     Time
     Types)
    (java.time LocalDate LocalTime OffsetTime)
-   (java.time.temporal ChronoField)
-   (java.util.concurrent ConcurrentHashMap)
-   (java.util.concurrent.atomic AtomicBoolean)))
+   (java.time.temporal ChronoField)))
 
 (set! *warn-on-reflection* true)
 
-;; Thread-safe tracking of init SQL execution per database connection
-(def ^:private ^ConcurrentHashMap init-sql-states (ConcurrentHashMap.))
+;; Track initialized connections using WeakHashMap keyed by connection identity.
+;; This ensures init SQL runs on each new connection from the pool, while avoiding
+;; redundant execution on reused connections. WeakHashMap allows GC of closed connections.
+(def ^:private initialized-connections
+  (java.util.Collections/synchronizedMap (java.util.WeakHashMap.)))
 
+(defn- connection-initialized?
+  "Check if init SQL has already been executed on this specific connection instance."
+  [^Connection conn]
+  (.containsKey initialized-connections conn))
 
-;; Generate a unique key for a database connection based on its id + connection details,
-;; so when connection details change, the key changes and the init SQL is executed again
-(defn- get-database-key
-  [db-or-id-or-spec]
-  (let [details (if (map? (:details db-or-id-or-spec))
-                  (:details db-or-id-or-spec)
-                  db-or-id-or-spec)
-        id (get db-or-id-or-spec :id)]
-    (assoc details :id id)))
+(defn- mark-connection-initialized!
+  "Mark a connection as having had init SQL executed."
+  [^Connection conn]
+  (.put initialized-connections conn true))
+
+(defn- already-attached-error?
+  "Check if the error is due to a database already being attached.
+   This is expected when C3P0 reuses connections or wraps them in new proxies."
+  [^Throwable e]
+  (let [msg (str (.getMessage e))]
+    (or (str/includes? msg "already exists")
+        (str/includes? msg "already attached"))))
+
+(defn- ensure-init-sql!
+  "Execute init SQL on a connection if it hasn't been executed yet.
+   This is safe to call multiple times on the same connection.
+   Used for both pooled connections and cloned connections for metadata queries.
+
+   Handles the case where ATTACH fails because the database is already attached,
+   which can happen when C3P0 reuses underlying connections but wraps them in
+   new proxy objects (causing our identity-based tracking to miss them)."
+  [^Connection conn init-sql]
+  (when (and init-sql
+             (seq (str/trim init-sql))
+             (not (connection-initialized? conn)))
+    (log/infof "Executing DuckDB init SQL on connection...")
+    (try
+      (with-open [stmt (.createStatement conn)]
+        (.execute stmt init-sql))
+      (mark-connection-initialized! conn)
+      (log/tracef "Successfully executed DuckDB init SQL")
+      (catch Throwable e
+        (if (already-attached-error? e)
+          (do
+            ;; Database already attached - this is fine, mark as initialized
+            (log/tracef "DuckDB database already attached, marking connection as initialized")
+            (mark-connection-initialized! conn))
+          (do
+            (log/errorf e "Failed to execute DuckDB init SQL")
+            (throw e)))))))
 
 (driver/register! :duckdb, :parent :sql-jdbc)
 
@@ -147,23 +183,12 @@
    db-or-id-or-spec
    options
    (fn [^Connection conn]
+     ;; Execute init SQL on this connection if not already done.
+     ;; Uses per-connection tracking to ensure init SQL runs on each new connection
+     ;; from the pool, which is critical for DuckLake attachments that are session-scoped.
      (when (not (sql-jdbc.execute/recursive-connection?))
        (when-let [init-sql (-> db-or-id-or-spec :details :init_sql)]
-         (when (seq (str/trim init-sql))
-           (let [db-key (get-database-key db-or-id-or-spec)
-                 init-state (.computeIfAbsent init-sql-states db-key
-                                            (fn [_] (AtomicBoolean. false)))]
-             ;; Ensure init SQL is executed only once
-             (when (.compareAndSet ^AtomicBoolean init-state false true)
-               (log/infof "DuckDB init SQL has not been executed for this database, executing now...")
-               (try 
-                 (with-open [stmt (.createStatement conn)]
-                   (.execute stmt init-sql)
-                   (log/tracef "Successfully executed DuckDB init SQL"))
-                 (catch Throwable e
-                   ;; If init SQL fails, reset the state so it can be retried
-                   (.set ^AtomicBoolean init-state false)
-                   (log/errorf e "Failed to execute DuckDB init SQL"))))))))
+         (ensure-init-sql! conn init-sql)))
      ;; Additionally set timezone if provided and we're not in a recursive connection
      (when (and (or report-timezone session-timezone) (not (sql-jdbc.execute/recursive-connection?)))
        (let [timezone-to-use (or report-timezone session-timezone)]
@@ -396,6 +421,7 @@
   (let
    [database_file (get (get database :details) :database_file)
     database_file (first (database-file-path-split database_file))  ;; remove additional options in connection string
+    init-sql (-> database :details :init_sql)
     get_tables_query (str "select * from information_schema.tables where table_catalog not like '__ducklake_metadata%' "
                                ;; Additionally filter by db_name if connecting to MotherDuck, since
                                ;; multiple databases can be attached and information about the
@@ -408,16 +434,21 @@
      (sql-jdbc.execute/do-with-connection-with-options
       driver database nil
       (fn [conn]
-        (set
-         (for [{:keys [table_schema table_name]}
-               (jdbc/query {:connection (clone-raw-connection conn)}
-                           [get_tables_query])]
-           {:name table_name :schema table_schema}))))}))
+        (let [cloned-conn (clone-raw-connection conn)]
+          ;; Cloned connections don't inherit attachments, so we must run init SQL on them too.
+          ;; This is critical for DuckLake where the catalog attachment is session-scoped.
+          (ensure-init-sql! cloned-conn init-sql)
+          (set
+           (for [{:keys [table_schema table_name]}
+                 (jdbc/query {:connection cloned-conn}
+                             [get_tables_query])]
+             {:name table_name :schema table_schema})))))}))
 
 (defmethod driver/describe-table :duckdb
   [driver database {table_name :name, schema :schema}]
   (let [database_file (get (get database :details) :database_file)
         database_file (first (database-file-path-split database_file))  ;; remove additional options in connection string
+        init-sql (-> database :details :init_sql)
         get_columns_query (str
                            (format
                             "select * from information_schema.columns where table_name = '%s' and table_schema = '%s' and table_catalog not like '__ducklake_metadata%%' "
@@ -434,15 +465,17 @@
      :fields
      (sql-jdbc.execute/do-with-connection-with-options
       driver database nil
-      (fn [conn] (let [results (jdbc/query
-                                {:connection (clone-raw-connection conn)}
-                                [get_columns_query])]
-                   (set
-                    (for [[idx {column_name :column_name, data_type :data_type}] (m/indexed results)]
-                      {:name              column_name
-                       :database-type     data_type
-                       :base-type         (sql-jdbc.sync/database-type->base-type driver (keyword data_type))
-                       :database-position idx})))))}))
+      (fn [conn]
+        (let [cloned-conn (clone-raw-connection conn)
+              ;; Cloned connections don't inherit attachments, so we must run init SQL on them too.
+              _ (ensure-init-sql! cloned-conn init-sql)
+              results (jdbc/query {:connection cloned-conn} [get_columns_query])]
+          (set
+           (for [[idx {column_name :column_name, data_type :data_type}] (m/indexed results)]
+             {:name              column_name
+              :database-type     data_type
+              :base-type         (sql-jdbc.sync/database-type->base-type driver (keyword data_type))
+              :database-position idx})))))}))
 
 ;; The 0.4.0 DuckDB JDBC .getImportedKeys method throws 'not implemented' yet.
 ;; There is no support of FK yet.
