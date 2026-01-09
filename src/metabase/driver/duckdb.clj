@@ -88,39 +88,34 @@
 (defn- jdbc-spec
   "Creates a spec for `clojure.java.jdbc` to use for connecting to DuckDB via JDBC from the given `opts`"
   [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting,
-           motherduck_token, memory_limit, azure_transport_option_type, attach_mode], :as details}]
+           motherduck_token, memory_limit, azure_transport_option_type, attach_mode, additional-options]}]
   (let [[database_file_base database_file_additional_options] (database-file-path-split database_file)]
-    (-> details
-        (merge
-         {:classname         "org.duckdb.DuckDBDriver"
-          :subprotocol       "duckdb"
-          :subname           (or database_file "")
-          "duckdb.read_only" (str read_only)
-          "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
-          "temp_directory"   (str database_file_base ".tmp")
-          "jdbc_stream_results" "true"
-          :TimeZone  "UTC"}
-         (when old_implicit_casting
-           {"old_implicit_casting" (str old_implicit_casting)})
-         (when memory_limit
-           {"memory_limit" (str memory_limit)})
-         (when azure_transport_option_type
-           {"azure_transport_option_type" (str azure_transport_option_type)})
-         (when allow_unsigned_extensions
-           {"allow_unsigned_extensions" (str allow_unsigned_extensions)})
-         (when (seq (re-find #"^md:" database_file))
-            ;; attach_mode option is not settable by the user, it's always single mode when
-            ;; using motherduck, but in tests we need to be able to connect to motherduck in
-            ;; workspace mode, so it's handled here.
-           {"motherduck_attach_mode"  (or attach_mode "single")})    ;; when connecting to MotherDuck, explicitly connect to a single database
-         (when (seq motherduck_token)     ;; Only configure the option if token is provided
-           {"motherduck_token" motherduck_token})
-         (sql-jdbc.common/additional-options->map (:additional-options details) :url)
-         (sql-jdbc.common/additional-options->map database_file_additional_options :url))
-        ;; remove fields from the metabase config that do not directly go into the jdbc spec
-        (dissoc :database_file :read_only :port :engine :allow_unsigned_extensions
-                :old_implicit_casting :motherduck_token :memory_limit :azure_transport_option_type
-                :advanced-options :additional-options :attach_mode :init_sql))))
+    (merge
+     {:classname         "org.duckdb.DuckDBDriver"
+      :subprotocol       "duckdb"
+      :subname           (or database_file "")
+      "duckdb.read_only" (str read_only)
+      "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
+      "temp_directory"   (str database_file_base ".tmp")
+      "jdbc_stream_results" "true"
+      :TimeZone  "UTC"}
+     (when old_implicit_casting
+       {"old_implicit_casting" (str old_implicit_casting)})
+     (when memory_limit
+       {"memory_limit" (str memory_limit)})
+     (when azure_transport_option_type
+       {"azure_transport_option_type" (str azure_transport_option_type)})
+     (when allow_unsigned_extensions
+       {"allow_unsigned_extensions" (str allow_unsigned_extensions)})
+     (when (seq (re-find #"^md:" database_file))
+       ;; attach_mode option is not settable by the user, it's always single mode when
+       ;; using motherduck, but in tests we need to be able to connect to motherduck in
+       ;; workspace mode, so it's handled here.
+       {"motherduck_attach_mode"  (or attach_mode "single")})    ;; when connecting to MotherDuck, explicitly connect to a single database
+     (when (seq motherduck_token)     ;; Only configure the option if token is provided
+       {"motherduck_token" motherduck_token})
+     (sql-jdbc.common/additional-options->map additional-options :url)
+     (sql-jdbc.common/additional-options->map database_file_additional_options :url))))
 
 (defn- remove-keys-with-prefix [details prefix]
   (apply dissoc details (filter #(str/starts-with? (name %) prefix) (keys details))))
@@ -475,11 +470,26 @@
        "SELECT unnest(string_split(current_setting('search_path'), ','))"
        "))"))
 
+(def ^:private excluded-schemas-filter
+  "SQL filter clause that excludes system schemas when not filtering by search_path."
+  (str "table_schema NOT IN ('information_schema', 'pg_catalog', 'md_information_schema') "
+       "AND table_catalog NOT IN ('system', 'temp')"))
+
+(defn- schema-filter-for-database
+  "Returns the appropriate schema filter SQL clause based on database settings.
+   When filter_by_search_path is true, uses search_path filter.
+   When false (default), excludes only system schemas."
+  [database]
+  (if (get-in database [:details :filter_by_search_path])
+    search-path-filter
+    excluded-schemas-filter))
+
 (defmethod driver/describe-database :duckdb
   [driver database]
-  (let [get_tables_query (str "SELECT table_catalog || '.' || table_schema AS table_schema, table_name "
+  (let [schema-filter (schema-filter-for-database database)
+        get_tables_query (str "SELECT table_catalog || '.' || table_schema AS table_schema, table_name "
                               "FROM information_schema.tables WHERE table_catalog NOT LIKE '__ducklake_metadata%' AND "
-                              search-path-filter)]
+                              schema-filter)]
     {:tables
      (sql-jdbc.execute/do-with-connection-with-options
       driver database nil
@@ -496,11 +506,12 @@
         catalog-filter (if catalog
                          (format "table_catalog = '%s' AND " catalog)
                          "")
+        schema-filter (schema-filter-for-database database)
         get_columns_query (str
                            (format
                             "SELECT * FROM information_schema.columns WHERE table_name = '%s' AND %stable_schema = '%s' AND table_catalog NOT LIKE '__ducklake_metadata%%' AND "
                             table_name catalog-filter actual-schema)
-                           search-path-filter)]
+                           schema-filter)]
     {:name   table_name
      :schema schema
      :fields

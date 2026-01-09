@@ -43,11 +43,16 @@ driver:
       type: text
       required: false
       placeholder: "INSTALL httpfs; LOAD httpfs;"
+    - name: filter_by_search_path
+      display-name: Show only schemas in search_path
+      default: false
+      type: boolean
     - advanced-options-start
     - merge:
         - additional-options
         - display-name: Additional DuckDB connection string options
           placeholder: 'http_keep_alive=false'
+    - default-advanced-options
 
 init:
   - step: load-namespace
