@@ -439,10 +439,10 @@
           ;; This is critical for DuckLake where the catalog attachment is session-scoped.
           (ensure-init-sql! cloned-conn init-sql)
           (set
-           (for [{:keys [table_schema table_name]}
+           (for [{:keys [table_schema table_name table_comment]}
                  (jdbc/query {:connection cloned-conn}
                              [get_tables_query])]
-             {:name table_name :schema table_schema})))))}))
+             {:name table_name :schema table_schema :description table_comment})))))}))
 
 (defmethod driver/describe-table :duckdb
   [driver database {table_name :name, schema :schema}]
@@ -471,11 +471,12 @@
               _ (ensure-init-sql! cloned-conn init-sql)
               results (jdbc/query {:connection cloned-conn} [get_columns_query])]
           (set
-           (for [[idx {column_name :column_name, data_type :data_type}] (m/indexed results)]
+           (for [[idx {column_name :column_name, data_type :data_type, column_comment :column_comment}] (m/indexed results)]
              {:name              column_name
               :database-type     data_type
               :base-type         (sql-jdbc.sync/database-type->base-type driver (keyword data_type))
-              :database-position idx})))))}))
+              :database-position idx
+              :field-comment     column_comment})))))}))
 
 ;; The 0.4.0 DuckDB JDBC .getImportedKeys method throws 'not implemented' yet.
 ;; There is no support of FK yet.
