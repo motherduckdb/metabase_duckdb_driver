@@ -133,11 +133,11 @@ The end of the file sholud looks like this:
   metabase/duckdb             {:local/root "duckdb"}}}  <- add this!
 ```
 8. Set the DuckDB version you need in the `duckdb_plugin/metabase_duckdb_driver/deps.edn`
-9. Create duckdb driver directory in the cloned metabase sourcecode:
+9. Create duckdb driver directory in the cloned metabase sourcecode (or symlink to where the driver is):
 ```
 > mkdir -p duckdb_plugin/metabase/modules/drivers/duckdb
 ```
-10. Copy the `metabase_duckdb_driver` source code into created dir
+10. Copy the `metabase_duckdb_driver` source code into created dir (skip this if symlinked)
 ```
 > cp -rf duckdb_plugin/metabase_duckdb_driver/* duckdb_plugin/metabase/modules/drivers/duckdb/
 ```

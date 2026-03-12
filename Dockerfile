@@ -1,8 +1,8 @@
 FROM eclipse-temurin:21-jre-jammy
 
 # Build arguments for versions
-ARG METABASE_VERSION=0.56.9
-ARG METABASE_DUCKDB_DRIVER_VERSION=1.4.1.0
+ARG METABASE_VERSION=0.59.1
+ARG METABASE_DUCKDB_DRIVER_VERSION=1.4.4.0
 
 ENV MB_PLUGINS_DIR=/home/metabase/plugins/
 
