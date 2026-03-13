@@ -81,8 +81,8 @@ docker build . --tag metabase_duckdb:latest
 
 # Build with specific versions
 docker build . --tag metabase_duckdb:latest \
-  --build-arg METABASE_VERSION=0.56.9 \
-  --build-arg METABASE_DUCKDB_DRIVER_VERSION=0.4.1
+  --build-arg METABASE_VERSION=0.58.9 \
+  --build-arg METABASE_DUCKDB_DRIVER_VERSION=1.4.3.1
 ```
 
 Then start the container:
