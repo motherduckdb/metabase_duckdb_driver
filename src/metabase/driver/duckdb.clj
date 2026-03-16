@@ -128,12 +128,22 @@
         [database-file additional-options])
       [database_file ""])))
 
+(defn- remove-namespaced-keys
+  "Metabase 0.59+ annotates effective connection details with internal namespaced keys.
+   DuckDB treats any unknown JDBC property as a config option, so strip them before
+   building the JDBC spec."
+  [details]
+  (into {}
+        (remove (comp namespace key))
+        details))
+
 (defn- jdbc-spec
   "Creates a spec for `clojure.java.jdbc` to use for connecting to DuckDB via JDBC from the given `opts`"
   [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting,
            motherduck_token, memory_limit, azure_transport_option_type, attach_mode], :as details}]
   (let [[database_file_base database_file_additional_options] (database-file-path-split database_file)]
     (-> details
+        remove-namespaced-keys
         (merge
          {:classname         "org.duckdb.DuckDBDriver"
           :subprotocol       "duckdb"
