@@ -128,12 +128,21 @@
         [database-file additional-options])
       [database_file ""])))
 
+(defn- remove-internal-connection-keys
+  "Metabase 0.59+ annotates effective connection details with internal keys that should
+   not be forwarded to DuckDB as JDBC properties."
+  [details]
+  (dissoc details
+          :metabase.driver.connection/effective-connection-type
+          :metabase.driver.connection/database-id))
+
 (defn- jdbc-spec
   "Creates a spec for `clojure.java.jdbc` to use for connecting to DuckDB via JDBC from the given `opts`"
   [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting,
            motherduck_token, memory_limit, azure_transport_option_type, attach_mode], :as details}]
   (let [[database_file_base database_file_additional_options] (database-file-path-split database_file)]
     (-> details
+        remove-internal-connection-keys
         (merge
          {:classname         "org.duckdb.DuckDBDriver"
           :subprotocol       "duckdb"
