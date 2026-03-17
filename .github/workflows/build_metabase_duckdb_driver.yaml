@@ -32,12 +32,12 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: 'lts/*'
-        
-    - name: Install Yarn 1.x
-      run: |
-        npm install -g yarn@1
-        yarn --version
+        node-version-file: 'metabase/.nvmrc'
+
+    - name: Install Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: '1.3.7'
         
     - name: Set up Clojure
       uses: DeLaGuardo/setup-clojure@12.3
@@ -57,6 +57,11 @@ jobs:
         name: metabase-duckdb-driver
         path: metabase/resources/modules/duckdb.metabase-driver.jar
         if-no-files-found: error
+
+    - name: Patch Metabase test deps
+      working-directory: ./metabase
+      run: |
+        git apply ./modules/drivers/duckdb/ci/metabase_test_deps.patch
         
     - name: Run integration tests against MotherDuck
       working-directory: ./metabase
@@ -64,13 +69,11 @@ jobs:
       env:
           motherduck_token: ${{ secrets.motherduck_ci_user_token }}
       run: |
-        git apply ./modules/drivers/duckdb/ci/metabase_test_deps.patch
-        MB_EDITION=ee yarn build-static-viz
-        DRIVERS=motherduck clojure -X:dev:drivers:drivers-dev:ee:ee-dev:test
+        MB_EDITION=ee bun run build-static-viz
+        DRIVERS=motherduck clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:test
        
     - name: Run integration tests against DuckDB local
       working-directory: ./metabase
       continue-on-error: true
       run: |
-        DRIVERS=duckdb clojure -X:dev:drivers:drivers-dev:ee:ee-dev:test
-
+        DRIVERS=duckdb clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:test

@@ -1,7 +1,7 @@
 (ns metabase.test.data.motherduck
   (:require
    [clojure.tools.logging :as log]
-   [metabase.config :as config]
+   [metabase.config.core :as config]
    [metabase.driver :as driver]
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
    [metabase.driver.sql-jdbc.execute :as sql-jdbc.execute]
@@ -122,8 +122,11 @@
   (let [drop-sql (fn [db-name] (format "DROP DATABASE IF EXISTS \"%s\" CASCADE;" db-name))]
     (with-open [stmt (.createStatement conn)]
       (with-open [rset (.executeQuery stmt "select database_name from duckdb_databases() where type = 'motherduck' and database_name not in ('my_db', 'sample_data'); ")]
-        (while (.next rset) 
-          (let [db-name (.getString rset "database_name")]
+        (let [db-names (loop [names []]
+                         (if (.next rset)
+                           (recur (conj names (.getString rset "database_name")))
+                           names))]
+          (doseq [db-name db-names]
             (with-open [inner-stmt (.createStatement conn)]
               (.execute inner-stmt (drop-sql db-name)))))))))
 

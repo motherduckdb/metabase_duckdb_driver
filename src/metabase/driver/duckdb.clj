@@ -22,25 +22,60 @@
     Time
     Types)
    (java.time LocalDate LocalTime OffsetTime)
-   (java.time.temporal ChronoField)
-   (java.util.concurrent ConcurrentHashMap)
-   (java.util.concurrent.atomic AtomicBoolean)))
+   (java.time.temporal ChronoField)))
 
 (set! *warn-on-reflection* true)
 
-;; Thread-safe tracking of init SQL execution per database connection
-(def ^:private ^ConcurrentHashMap init-sql-states (ConcurrentHashMap.))
+;; Track initialized connections using WeakHashMap keyed by connection identity.
+;; This ensures init SQL runs on each new connection from the pool, while avoiding
+;; redundant execution on reused connections. WeakHashMap allows GC of closed connections.
+(def ^:private initialized-connections
+  (java.util.Collections/synchronizedMap (java.util.WeakHashMap.)))
 
+(defn- connection-initialized?
+  "Check if init SQL has already been executed on this specific connection instance."
+  [^Connection conn]
+  (.containsKey initialized-connections conn))
 
-;; Generate a unique key for a database connection based on its id + connection details,
-;; so when connection details change, the key changes and the init SQL is executed again
-(defn- get-database-key
-  [db-or-id-or-spec]
-  (let [details (if (map? (:details db-or-id-or-spec))
-                  (:details db-or-id-or-spec)
-                  db-or-id-or-spec)
-        id (get db-or-id-or-spec :id)]
-    (assoc details :id id)))
+(defn- mark-connection-initialized!
+  "Mark a connection as having had init SQL executed."
+  [^Connection conn]
+  (.put initialized-connections conn true))
+
+(defn- already-attached-error?
+  "Check if the error is due to a database already being attached.
+   This is expected when C3P0 reuses connections or wraps them in new proxies."
+  [^Throwable e]
+  (let [msg (str/lower-case (str (.getMessage e)))]
+    (or (str/includes? msg "already attached")
+        (and (str/includes? msg "attach")
+             (str/includes? msg "already exists")))))
+
+(defn- ensure-init-sql!
+  "Execute init SQL on a connection if it hasn't been executed yet.
+   This is safe to call multiple times on the same connection.
+
+   Handles ATTACH failures caused by the database already being attached, which
+   can happen when C3P0 reuses underlying connections but wraps them in new
+   proxy objects."
+  [^Connection conn init-sql]
+  (when (and init-sql
+             (seq (str/trim init-sql))
+             (not (connection-initialized? conn)))
+    (log/infof "Executing DuckDB init SQL on connection...")
+    (try
+      (with-open [stmt (.createStatement conn)]
+        (.execute stmt init-sql))
+      (mark-connection-initialized! conn)
+      (log/tracef "Successfully executed DuckDB init SQL")
+      (catch Throwable e
+        (if (already-attached-error? e)
+          (do
+            (log/tracef "DuckDB database already attached, marking connection as initialized")
+            (mark-connection-initialized! conn))
+          (do
+            (log/errorf e "Failed to execute DuckDB init SQL")
+            (throw e)))))))
 
 (driver/register! :duckdb, :parent :sql-jdbc)
 
@@ -92,21 +127,33 @@
         [database-file additional-options])
       [database_file ""])))
 
+(defn- remove-internal-connection-keys
+  "Metabase annotates effective connection details with internal keys that should
+   not be forwarded to DuckDB as JDBC properties."
+  [details]
+  (dissoc details
+          :metabase.driver.connection/effective-connection-type
+          :metabase.driver.connection/database-id
+          :destination-database
+          "destination-database"))
+
 (defn- jdbc-spec
   "Creates a spec for `clojure.java.jdbc` to use for connecting to DuckDB via JDBC from the given `opts`"
   [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting,
            motherduck_token, memory_limit, azure_transport_option_type, attach_mode], :as details}]
   (let [[database_file_base database_file_additional_options] (database-file-path-split database_file)]
     (-> details
+        remove-internal-connection-keys
         (merge
          {:classname         "org.duckdb.DuckDBDriver"
           :subprotocol       "duckdb"
           :subname           (or database_file "")
-          "duckdb.read_only" (str read_only)
           "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
           "temp_directory"   (str database_file_base ".tmp")
           "jdbc_stream_results" "true"
           :TimeZone  "UTC"}
+         (when (some? read_only)
+           {"duckdb.read_only" (str read_only)})
          (when old_implicit_casting
            {"old_implicit_casting" (str old_implicit_casting)})
          (when memory_limit
@@ -149,21 +196,7 @@
    (fn [^Connection conn]
      (when (not (sql-jdbc.execute/recursive-connection?))
        (when-let [init-sql (-> db-or-id-or-spec :details :init_sql)]
-         (when (seq (str/trim init-sql))
-           (let [db-key (get-database-key db-or-id-or-spec)
-                 init-state (.computeIfAbsent init-sql-states db-key
-                                            (fn [_] (AtomicBoolean. false)))]
-             ;; Ensure init SQL is executed only once
-             (when (.compareAndSet ^AtomicBoolean init-state false true)
-               (log/infof "DuckDB init SQL has not been executed for this database, executing now...")
-               (try 
-                 (with-open [stmt (.createStatement conn)]
-                   (.execute stmt init-sql)
-                   (log/tracef "Successfully executed DuckDB init SQL"))
-                 (catch Throwable e
-                   ;; If init SQL fails, reset the state so it can be retried
-                   (.set ^AtomicBoolean init-state false)
-                   (log/errorf e "Failed to execute DuckDB init SQL"))))))))
+         (ensure-init-sql! conn init-sql)))
      ;; Additionally set timezone if provided and we're not in a recursive connection
      (when (and (or report-timezone session-timezone) (not (sql-jdbc.execute/recursive-connection?)))
        (let [timezone-to-use (or report-timezone session-timezone)]

@@ -12,4 +12,16 @@ index 67e3128c77..c656572f23 100644
 +    ]}
  
  ;;; Linters
+
+diff --git a/.clj-kondo/config.edn b/.clj-kondo/config.edn
+index 85866f8d00..c494f0f34b 100644
+--- a/.clj-kondo/config.edn
++++ b/.clj-kondo/config.edn
+@@ -220,4 +220,5 @@
+               :sqlite
+               :sqlserver
+               :starburst
+-              :vertica}}
++              :vertica
++              :duckdb}}
  
