@@ -1,8 +1,8 @@
 diff --git a/deps.edn b/deps.edn
-index 67e3128c77..c656572f23 100644
+index 7bc5b758..58e95c06 100644
 --- a/deps.edn
 +++ b/deps.edn
-@@ -430,7 +430,9 @@
+@@ -485,7 +485,9 @@
      "modules/drivers/sqlite/test"
      "modules/drivers/sqlserver/test"
      "modules/drivers/starburst/test"
@@ -13,15 +13,31 @@ index 67e3128c77..c656572f23 100644
  
  ;;; Linters
 
+diff --git a/modules/drivers/deps.edn b/modules/drivers/deps.edn
+index 98f65a21..e0c8da9d 100644
+--- a/modules/drivers/deps.edn
++++ b/modules/drivers/deps.edn
+@@ -23,4 +23,6 @@
+   metabase/sqlite             {:local/root "sqlite"}
+   metabase/sqlserver          {:local/root "sqlserver"}
+   metabase/starburst          {:local/root "starburst"}
+-  metabase/vertica            {:local/root "vertica"}}}
++  metabase/vertica            {:local/root "vertica"}
++  metabase/duckdb             {:local/root "duckdb"}
++  }}
+ 
 diff --git a/.clj-kondo/config.edn b/.clj-kondo/config.edn
-index 85866f8d00..c494f0f34b 100644
+index 08727d8d..5b0e5e1b 100644
 --- a/.clj-kondo/config.edn
 +++ b/.clj-kondo/config.edn
-@@ -220,4 +220,5 @@
+@@ -220,7 +220,8 @@
                :sqlite
                :sqlserver
                :starburst
 -              :vertica}}
 +              :vertica
 +              :duckdb}}
+ 
+   ;;
+   ;; misc config for built-in linters
  
