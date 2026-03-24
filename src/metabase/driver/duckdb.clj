@@ -46,18 +46,18 @@
   "Check if the error is due to a database already being attached.
    This is expected when C3P0 reuses connections or wraps them in new proxies."
   [^Throwable e]
-  (let [msg (str (.getMessage e))]
-    (or (str/includes? msg "already exists")
-        (str/includes? msg "already attached"))))
+  (let [msg (str/lower-case (str (.getMessage e)))]
+    (or (str/includes? msg "already attached")
+        (and (str/includes? msg "attach")
+             (str/includes? msg "already exists")))))
 
 (defn- ensure-init-sql!
   "Execute init SQL on a connection if it hasn't been executed yet.
    This is safe to call multiple times on the same connection.
-   Used for both pooled connections and cloned connections for metadata queries.
 
-   Handles the case where ATTACH fails because the database is already attached,
-   which can happen when C3P0 reuses underlying connections but wraps them in
-   new proxy objects (causing our identity-based tracking to miss them)."
+   Handles ATTACH failures caused by the database already being attached, which
+   can happen when C3P0 reuses underlying connections but wraps them in new
+   proxy objects."
   [^Connection conn init-sql]
   (when (and init-sql
              (seq (str/trim init-sql))
@@ -71,7 +71,6 @@
       (catch Throwable e
         (if (already-attached-error? e)
           (do
-            ;; Database already attached - this is fine, mark as initialized
             (log/tracef "DuckDB database already attached, marking connection as initialized")
             (mark-connection-initialized! conn))
           (do
@@ -129,12 +128,14 @@
       [database_file ""])))
 
 (defn- remove-internal-connection-keys
-  "Metabase 0.59+ annotates effective connection details with internal keys that should
+  "Metabase annotates effective connection details with internal keys that should
    not be forwarded to DuckDB as JDBC properties."
   [details]
   (dissoc details
           :metabase.driver.connection/effective-connection-type
-          :metabase.driver.connection/database-id))
+          :metabase.driver.connection/database-id
+          :destination-database
+          "destination-database"))
 
 (defn- jdbc-spec
   "Creates a spec for `clojure.java.jdbc` to use for connecting to DuckDB via JDBC from the given `opts`"
@@ -147,11 +148,12 @@
          {:classname         "org.duckdb.DuckDBDriver"
           :subprotocol       "duckdb"
           :subname           (or database_file "")
-          "duckdb.read_only" (str read_only)
           "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
           "temp_directory"   (str database_file_base ".tmp")
           "jdbc_stream_results" "true"
           :TimeZone  "UTC"}
+         (when (some? read_only)
+           {"duckdb.read_only" (str read_only)})
          (when old_implicit_casting
            {"old_implicit_casting" (str old_implicit_casting)})
          (when memory_limit

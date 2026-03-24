@@ -32,12 +32,15 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: 'lts/*'
-        
-    - name: Install Yarn 1.x
-      run: |
-        npm install -g yarn@1
-        yarn --version
+        node-version-file: 'metabase/.nvmrc'
+
+    - name: Install Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: '1.3.7'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
         
     - name: Set up Clojure
       uses: DeLaGuardo/setup-clojure@13.4
@@ -57,20 +60,98 @@ jobs:
         name: metabase-duckdb-driver
         path: metabase/resources/modules/duckdb.metabase-driver.jar
         if-no-files-found: error
-        
-    - name: Run integration tests against MotherDuck
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [motherduck, duckdb]
+    name: integration (${{ matrix.target }})
+
+    steps:
+    - name: Clone Metabase repository
+      uses: actions/checkout@v4
+      with:
+        repository: metabase/metabase
+        path: metabase
+
+    - name: Checkout driver code
+      uses: actions/checkout@v4
+      with:
+        path: metabase/modules/drivers/duckdb
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '21'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: 'metabase/.nvmrc'
+
+    - name: Install Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: '1.3.7'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+
+    - name: Set up Clojure
+      uses: DeLaGuardo/setup-clojure@13.4
+      with:
+        cli: latest
+
+    - name: Patch Metabase test deps
+      working-directory: ./metabase
+      run: |
+        python - <<'PY'
+        from pathlib import Path
+
+        def replace_once(path_str: str, old: str, new: str) -> None:
+            path = Path(path_str)
+            text = path.read_text()
+            if new in text:
+                return
+            if old not in text:
+                raise RuntimeError(f"Could not patch {path}: expected snippet not found")
+            path.write_text(text.replace(old, new, 1))
+
+        replace_once(
+            "deps.edn",
+            '    "modules/drivers/vertica/test"]}',
+            '    "modules/drivers/vertica/test"\n'
+            '    "modules/drivers/duckdb/test"\n'
+            '    ]}',
+        )
+        replace_once(
+            "modules/drivers/deps.edn",
+            '  metabase/vertica            {:local/root "vertica"}}}',
+            '  metabase/vertica            {:local/root "vertica"}\n'
+            '  metabase/duckdb             {:local/root "duckdb"}\n'
+            '  }}',
+        )
+        replace_once(
+            ".clj-kondo/config.edn",
+            '              :vertica}}',
+            '              :vertica\n'
+            '              :duckdb}}',
+        )
+        PY
+
+    - name: Build static viz
+      if: matrix.target == 'motherduck'
+      working-directory: ./metabase
+      run: |
+        MB_EDITION=ee bun run build-static-viz
+
+    - name: Run integration tests
       working-directory: ./metabase
       continue-on-error: true
       env:
-          motherduck_token: ${{ secrets.motherduck_ci_user_token }}
+        motherduck_token: ${{ matrix.target == 'motherduck' && secrets.motherduck_ci_user_token || '' }}
       run: |
-        git apply ./modules/drivers/duckdb/ci/metabase_test_deps.patch
-        MB_EDITION=ee yarn build-static-viz
-        DRIVERS=motherduck clojure -X:dev:drivers:drivers-dev:ee:ee-dev:test
-
-    - name: Run integration tests against DuckDB local
-      working-directory: ./metabase
-      continue-on-error: true
-      run: |
-        DRIVERS=duckdb clojure -X:dev:drivers:drivers-dev:ee:ee-dev:test
-
+        DRIVERS=${{ matrix.target }} clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:test
