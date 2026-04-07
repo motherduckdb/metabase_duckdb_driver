@@ -185,11 +185,14 @@ Option A: Local build (macOS/Linux)
 
 - Java 21+ (e.g., `brew install openjdk@21` on macOS)
 - [Clojure CLI](https://clojure.org/guides/install_clojure) (e.g., `brew install clojure/tools/clojure` on macOS)
+- [Node.js](https://nodejs.org/) (CI uses the current LTS release)
+- Yarn 1.x (for example `npm install -g yarn@1`)
 
 Option B: DevContainer build
 
 - [Docker](https://www.docker.com/) installed and running
 - VS Code with [DevContainer](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension
+- The checked-in DevContainer currently targets Java 17. If the Metabase version you are building requires Java 21, update the DevContainer Java variant before building.
 
 ### Setup
 
