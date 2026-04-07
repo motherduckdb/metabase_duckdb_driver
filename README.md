@@ -57,6 +57,24 @@ Docker or custom location: Set `MB_PLUGINS_DIR` to use a custom plugins director
 
 > Note: DuckDB supports either one read/write process OR multiple read-only processes, but not both simultaneously.
 
+## Connection options
+
+The driver currently exposes these configuration fields in Metabase:
+
+| Option | Purpose |
+|-------|----------|
+| Database file | Local DuckDB path, `md:my_db`, `ducklake:/path/to/db.ducklake`, or `:memory:` |
+| Read-only mode | Opens local DuckDB files in read-only mode |
+| Enable old_implicit_casting | Recommended for Metabase datetime filters |
+| Allow unsigned extensions | Permits loading unsigned DuckDB extensions |
+| Memory limit | Sets DuckDB `memory_limit` (for example `1GB`) |
+| Azure transport option type | Passes through DuckDB Azure transport settings |
+| MotherDuck Token | Secret used for `md:` connections |
+| Init SQL | Runs on each new connection, useful for `ATTACH`, `INSTALL`, or `LOAD` statements |
+| Additional DuckDB connection string options | Extra JDBC URL parameters such as `http_keep_alive=false` |
+
+`Init SQL` is especially useful for DuckLake attachments and external object-store access, because the driver reruns it for new pooled connections.
+
 ## In-memory mode
 
 Set the database file to `:memory:` to use DuckDB without a persistent file. This is useful for querying external files directly.
@@ -188,10 +206,11 @@ mkdir -p metabase/modules/drivers/duckdb
 cp -rf metabase_duckdb_driver/* metabase/modules/drivers/duckdb/
 ```
 
-Register the driver by adding this line to `metabase/modules/drivers/deps.edn` inside the `:deps` map:
+Register the driver in the Metabase checkout:
 
-```clojure
-metabase/duckdb {:local/root "duckdb"}
+```bash
+cd metabase
+git apply ./modules/drivers/duckdb/ci/metabase_drivers_deps.patch
 ```
 
 ### Build
@@ -200,7 +219,7 @@ Option A: local build
 
 ```bash
 cd metabase
-clojure -X:build:drivers:build/driver :driver :duckdb
+./bin/build-driver.sh duckdb
 ```
 
 Option B: DevContainer build
@@ -212,7 +231,8 @@ Option B: DevContainer build
 
 ```bash
 cd metabase
-clojure -X:build:drivers:build/driver :driver :duckdb
+git apply ./modules/drivers/duckdb/ci/metabase_drivers_deps.patch
+./bin/build-driver.sh duckdb
 ```
 
 ### Output
@@ -224,6 +244,25 @@ metabase/resources/modules/duckdb.metabase-driver.jar
 ```
 
 Copy this file to your Metabase plugins directory to install it.
+
+### Running tests
+
+The repository CI currently does all of the following:
+
+- Builds the driver against a fresh `metabase/metabase` checkout
+- Runs MotherDuck integration tests with `DRIVERS=motherduck`
+- Runs local DuckDB integration tests with `DRIVERS=duckdb`
+
+To mirror that setup locally from the `metabase` checkout:
+
+```bash
+git apply ./modules/drivers/duckdb/ci/metabase_test_deps.patch
+MB_EDITION=ee yarn build-static-viz
+DRIVERS=motherduck clojure -X:dev:drivers:drivers-dev:ee:ee-dev:test
+DRIVERS=duckdb clojure -X:dev:drivers:drivers-dev:ee:ee-dev:test
+```
+
+The MotherDuck test run expects the `motherduck_token` environment variable to be set.
 
 ## Acknowledgement
 
