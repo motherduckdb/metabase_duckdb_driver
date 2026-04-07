@@ -12,9 +12,9 @@ This driver is supported by [MotherDuck](https://motherduck.com/). File issues o
 
 ### Where to find the driver
 
-Download the latest `duckdb.metabase-driver.jar` from the [releases page](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest).
+Download the latest `duckdb.metabase-driver.jar` from the [releases page](https://github.com/motherduckdb/metabase_duckdb_driver/releases/latest).
 
-You can find [past releases](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases), and [releases earlier than 0.2.6](https://github.com/AlexR2D2/metabase_duckdb_driver/releases) (DuckDB v0.10.0) on GitHub.
+You can find [past releases](https://github.com/motherduckdb/metabase_duckdb_driver/releases), and [releases earlier than 0.2.6](https://github.com/AlexR2D2/metabase_duckdb_driver/releases) (DuckDB v0.10.0) on GitHub.
 
 ### Installing the driver
 
@@ -108,32 +108,19 @@ Then query tables as `dl.my_table`.
 
 The DuckDB driver requires glibc and doesn't work with Alpine-based images.
 
-### Dockerfile
-
-Create a `Dockerfile` with the following content:
-
-```dockerfile
-FROM eclipse-temurin:21-jre
-
-ENV MB_PLUGINS_DIR=/plugins
-
-RUN mkdir -p ${MB_PLUGINS_DIR} /app
-
-# Download Metabase (use a specific version like v0.57.4 if needed)
-ADD https://downloads.metabase.com/latest/metabase.jar /app/metabase.jar
-
-# Download the latest MotherDuck DuckDB driver
-ADD https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest/download/duckdb.metabase-driver.jar ${MB_PLUGINS_DIR}/
-
-EXPOSE 3000
-
-CMD ["java", "-jar", "/app/metabase.jar"]
-```
+Use the included `Dockerfile`, which builds a Debian/Ubuntu-based Metabase image with the DuckDB driver preinstalled.
 
 ### Build and run
 
 ```bash
+# Build with default versions from the Dockerfile
 docker build . --tag metabase_duckdb:latest
+
+# Or build with specific versions
+docker build . --tag metabase_duckdb:latest \
+  --build-arg METABASE_VERSION=0.58.9 \
+  --build-arg METABASE_DUCKDB_DRIVER_VERSION=1.4.3.1
+
 docker run --name metabase_duckdb -d -p 3000:3000 metabase_duckdb
 ```
 
@@ -144,10 +131,13 @@ Open Metabase at <http://localhost:3000>. See [Running Metabase on Docker](https
 To access local DuckDB or Parquet files:
 
 ```bash
-docker run -v /local/data:/data -p 3000:3000 metabase_duckdb
+docker run \
+  -v /local/data:/home/metabase/data \
+  -p 3000:3000 \
+  metabase_duckdb
 ```
 
-Then reference files as `/data/myfile.duckdb` or `/data/myfile.parquet`.
+Then reference files as `/home/metabase/data/myfile.duckdb` or `/home/metabase/data/myfile.parquet`.
 
 ## Troubleshooting
 
@@ -163,7 +153,7 @@ Then reference files as `/data/myfile.duckdb` or `/data/myfile.parquet`.
 
 When updating the MotherDuck token, you may see: `Connection error: Can't open a connection to same database file with a different configuration`.
 
-Solution: Add `motherduck_dbinstance_inactivity_ttl=0s` to the connection string. This disables the instance cache and allows token updates.
+Solution: add `motherduck_dbinstance_inactivity_ttl=0s` in the `Additional DuckDB connection string options` field. This disables the instance cache and allows token updates.
 
 ## Building from source
 
@@ -191,7 +181,7 @@ mkdir duckdb_plugin && cd duckdb_plugin
 
 # Clone repositories
 git clone https://github.com/metabase/metabase.git
-git clone https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver.git
+git clone https://github.com/motherduckdb/metabase_duckdb_driver.git
 
 # Copy driver source into Metabase's driver directory
 mkdir -p metabase/modules/drivers/duckdb

@@ -1,7 +1,7 @@
 (ns metabase.test.data.motherduck
   (:require
    [clojure.tools.logging :as log]
-   [metabase.config :as config]
+   [metabase.config.core :as config]
    [metabase.driver :as driver]
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
    [metabase.driver.sql-jdbc.execute :as sql-jdbc.execute]

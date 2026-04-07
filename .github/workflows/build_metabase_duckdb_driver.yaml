@@ -40,7 +40,7 @@ jobs:
         yarn --version
         
     - name: Set up Clojure
-      uses: DeLaGuardo/setup-clojure@12.3
+      uses: DeLaGuardo/setup-clojure@13.4
       with:
         cli: latest
         
@@ -67,7 +67,7 @@ jobs:
         git apply ./modules/drivers/duckdb/ci/metabase_test_deps.patch
         MB_EDITION=ee yarn build-static-viz
         DRIVERS=motherduck clojure -X:dev:drivers:drivers-dev:ee:ee-dev:test
-       
+
     - name: Run integration tests against DuckDB local
       working-directory: ./metabase
       continue-on-error: true
