@@ -433,7 +433,8 @@
    [database_file (get (get database :details) :database_file)
     database_file (first (database-file-path-split database_file))  ;; remove additional options in connection string
     init-sql (-> database :details :init_sql)
-    get_tables_query (str "select * from information_schema.tables where table_catalog not like '__ducklake_metadata%' "
+    get_tables_query (str "select table_catalog, table_schema, table_name, table_comment from information_schema.tables where table_catalog not like '__ducklake_metadata%' "
+                          "and table_schema not in ('information_schema', 'pg_catalog') "
                                ;; Additionally filter by db_name if connecting to MotherDuck, since
                                ;; multiple databases can be attached and information about the
                                ;; non-target database will be present in information_schema.
@@ -450,27 +451,69 @@
           ;; This is critical for DuckLake where the catalog attachment is session-scoped.
           (ensure-init-sql! cloned-conn init-sql)
           (set
-           (for [{:keys [table_schema table_name table_comment]}
+           (for [{:keys [table_catalog table_schema table_name table_comment]}
                  (jdbc/query {:connection cloned-conn}
                              [get_tables_query])]
-             {:name table_name :schema table_schema :description table_comment})))))}))
+             ;; Encode catalog into schema as "catalog.schema" so describe-table
+             ;; can reconstruct the fully-qualified reference. For the default
+             ;; in-memory catalog, keep just the schema name for compatibility.
+             {:name table_name
+              :schema (if (= table_catalog "memory")
+                        table_schema
+                        (str table_catalog "." table_schema))
+              :description table_comment})))))}))
+
+(defn- split-composite-schema
+  "Splits a composite schema 'catalog.schema' into [catalog schema].
+   If there's no dot, returns [nil schema] for backwards compatibility."
+  [composite-schema]
+  (if (and composite-schema (str/includes? composite-schema "."))
+    (let [idx (str/index-of composite-schema ".")]
+      [(subs composite-schema 0 idx) (subs composite-schema (inc idx))])
+    [nil composite-schema]))
+
+(defn- qualified-table-ref
+  "Build a SQL table reference from an optional catalog, schema, and table name."
+  [catalog schema table_name]
+  (if catalog
+    (format "%s.%s.\"%s\"" catalog schema table_name)
+    (format "%s.\"%s\"" schema table_name)))
+
+(defn- fields-from-describe
+  "Fallback: get fields via DESCRIBE SELECT * FROM table. Works for Iceberg and other
+   extensions that don't populate information_schema.columns."
+  [driver conn schema table_name]
+  (let [[catalog actual-schema] (split-composite-schema schema)
+        query (format "DESCRIBE SELECT * FROM %s" (qualified-table-ref catalog actual-schema table_name))
+        results (jdbc/query {:connection conn} [query])]
+    (set
+     (for [[idx {column_name :column_name, data_type :column_type}] (m/indexed results)
+           :let [base-type (sql-jdbc.sync/database-type->base-type driver (keyword data_type))]
+           :when (some? base-type)]
+       {:name              column_name
+        :database-type     data_type
+        :base-type         base-type
+        :database-position idx}))))
 
 (defmethod driver/describe-table :duckdb
   [driver database {table_name :name, schema :schema}]
   (let [database_file (get (get database :details) :database_file)
         database_file (first (database-file-path-split database_file))  ;; remove additional options in connection string
         init-sql (-> database :details :init_sql)
+        [catalog actual-schema] (split-composite-schema schema)
         get_columns_query (str
                            (format
                             "select * from information_schema.columns where table_name = '%s' and table_schema = '%s' and table_catalog not like '__ducklake_metadata%%' "
-                            table_name schema)
+                            table_name actual-schema)
+                           (if catalog
+                             (format "and table_catalog = '%s' " catalog)
                                   ;; Additionally filter by db_name if connecting to MotherDuck, since
                                   ;; multiple databases can be attached and information about the
                                   ;; non-target database will be present in information_schema.
-                           (if (is_motherduck database_file)
-                             (let [db_name_without_md (motherduck_db_name database_file)]
-                               (format "and table_catalog = '%s' " db_name_without_md))
-                             ""))]
+                             (if (is_motherduck database_file)
+                               (let [db_name_without_md (motherduck_db_name database_file)]
+                                 (format "and table_catalog = '%s' " db_name_without_md))
+                               "")))]
     {:name   table_name
      :schema schema
      :fields
@@ -480,14 +523,24 @@
         (let [cloned-conn (clone-raw-connection conn)
               ;; Cloned connections don't inherit attachments, so we must run init SQL on them too.
               _ (ensure-init-sql! cloned-conn init-sql)
-              results (jdbc/query {:connection cloned-conn} [get_columns_query])]
-          (set
-           (for [[idx {column_name :column_name, data_type :data_type, column_comment :column_comment}] (m/indexed results)]
-             {:name              column_name
-              :database-type     data_type
-              :base-type         (sql-jdbc.sync/database-type->base-type driver (keyword data_type))
-              :database-position idx
-              :field-comment     column_comment})))))}))
+              results (jdbc/query {:connection cloned-conn} [get_columns_query])
+              info-schema-fields
+              (set
+               (for [[idx {column_name :column_name, data_type :data_type, column_comment :column_comment}] (m/indexed results)
+                     :let [base-type (sql-jdbc.sync/database-type->base-type driver (keyword data_type))]
+                     :when (some? base-type)]
+                 {:name              column_name
+                  :database-type     data_type
+                  :base-type         base-type
+                  :database-position idx
+                  :field-comment     column_comment}))]
+          (if (seq info-schema-fields)
+            info-schema-fields
+            (do
+              (log/infof "No columns found in information_schema for %s.%s, falling back to DESCRIBE"
+                         schema table_name)
+              (fields-from-describe driver cloned-conn schema table_name))))))}))
+
 
 ;; The 0.4.0 DuckDB JDBC .getImportedKeys method throws 'not implemented' yet.
 ;; There is no support of FK yet.
