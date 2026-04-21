@@ -454,13 +454,8 @@
            (for [{:keys [table_catalog table_schema table_name table_comment]}
                  (jdbc/query {:connection cloned-conn}
                              [get_tables_query])]
-             ;; Encode catalog into schema as "catalog.schema" so describe-table
-             ;; can reconstruct the fully-qualified reference. For the default
-             ;; in-memory catalog, keep just the schema name for compatibility.
              {:name table_name
-              :schema (if (= table_catalog "memory")
-                        table_schema
-                        (str table_catalog "." table_schema))
+              :schema table_schema
               :description table_comment})))))}))
 
 (defn- split-composite-schema
