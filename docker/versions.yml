@@ -1,0 +1,17 @@
+# Metabase version → list of compatible metabase_duckdb_driver versions
+# Each combination builds one image tagged <metabase>-duckdb<driver>.
+#
+# Series keys (e.g. v0.59) are expanded at build time to all matching patch
+# version tags found on Docker Hub (metabase/metabase).
+# Specific version keys (e.g. v0.60.0) are used as-is.
+#
+# Sources:
+#   Metabase Docker Hub: https://hub.docker.com/r/metabase/metabase/tags
+#   Driver releases:     https://github.com/motherduckdb/metabase_duckdb_driver/releases
+
+# series keys
+v0.59:
+  - 1.5.3.0
+  - 1.5.2.0
+  - 1.5.1.0
+  - 1.4.4.0

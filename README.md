@@ -71,7 +71,30 @@ If you're using a ducklake database on MotherDuck, it can be attached like a reg
 
 ## Docker
 
-Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Dockerfile to create a Docker image of Metabase based on Debian where the DuckDB plugin does work.
+Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Debian-based Docker image of Metabase where the DuckDB plugin does work.
+
+### Pre-built images
+
+Pre-built images are published to the GitHub Container Registry and are the easiest way to get started:
+
+```bash
+# Latest Metabase with the latest DuckDB driver
+docker pull ghcr.io/motherduckdb/metabase-duckdb:latest
+
+# Specific Metabase and driver version
+docker pull ghcr.io/motherduckdb/metabase-duckdb:0.59.12-duckdb1.5.2.0
+```
+
+Tags follow the pattern `<metabase_version>-duckdb<driver_version>`. Browse all available tags at [ghcr.io/motherduckdb/metabase-duckdb](https://github.com/motherduckdb/metabase_duckdb_driver/pkgs/container/metabase-duckdb).
+
+Start the container:
+
+```bash
+docker run --name metabase_duckdb -d -p 3000:3000 ghcr.io/motherduckdb/metabase-duckdb:latest
+# Then open http://localhost:3000
+```
+
+### Building locally
 
 See the included [Dockerfile](./Dockerfile) for a complete setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
 
@@ -81,18 +104,26 @@ docker build . --tag metabase_duckdb:latest
 
 # Build with specific versions
 docker build . --tag metabase_duckdb:latest \
-  --build-arg METABASE_VERSION=0.58.9 \
-  --build-arg METABASE_DUCKDB_DRIVER_VERSION=1.4.3.1
+  --build-arg METABASE_VERSION=0.59.12 \
+  --build-arg METABASE_DUCKDB_DRIVER_VERSION=1.5.2.0
 ```
 
-Then start the container:
+### Publishing new images (maintainers)
+
+The matrix of published images is defined in [docker/versions.yml](./docker/versions.yml). Each entry maps a Metabase series (e.g. `v0.59`) or specific version to a list of driver versions. Series keys are automatically expanded to all matching patch versions from Docker Hub.
+
+Images are built and pushed to ghcr.io automatically when:
+- A new release is published (builds any combinations in `docker/versions.yml` that don't yet exist on ghcr.io)
+- `docker/versions.yml` is changed on `main` (e.g. adding a new Metabase series)
+
+Already-existing image tags are skipped; the `:latest` tag always points to the last entry in the expanded matrix.
+
+To build and push images locally:
+
 ```bash
-docker run --name metabase_duckdb -d -p 3000:3000 metabase_duckdb
+echo $GITHUB_TOKEN | docker login ghcr.io -u <your-github-username> --password-stdin
+PUSH=true ./docker/build.sh
 ```
-
-Now open Metabase in the browser: http://localhost:3000. For detailed instructions on running the container, please see the official guide for [Running Metabase on Docker](https://www.metabase.com/docs/latest/installation-and-operation/running-metabase-on-docker).
-
-
 
 ### Using DB file with Docker
 
