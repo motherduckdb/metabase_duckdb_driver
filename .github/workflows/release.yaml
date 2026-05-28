@@ -130,13 +130,16 @@ jobs:
       SHA: ${{ needs.prepare.outputs.sha }}
       TITLE: ${{ needs.prepare.outputs.title }}
     steps:
-      - name: Download the jar from the green build
-        run: gh run download "${{ needs.prepare.outputs.run_id }}" -n metabase-duckdb-driver
+      # The default jar plus the musl variants, each in a directory named after its artifact.
+      - name: Download the jars from the green build
+        run: |
+          gh run download "${{ needs.prepare.outputs.run_id }}" -p 'metabase-duckdb-driver*'
+          [ "$(ls */*.jar | wc -l)" -eq 3 ] || { echo "::error::Expected 3 jars, got: $(ls */*.jar)"; exit 1; }
 
       # With assets, gh publishes only after they're uploaded and deletes the draft if uploading fails.
       - name: Create release
         run: |
-          ${{ inputs.dry_run && 'echo [dry run]' || '' }} gh release create "$VERSION" duckdb.metabase-driver.jar \
+          ${{ inputs.dry_run && 'echo [dry run]' || '' }} gh release create "$VERSION" */*.jar \
             --target "$SHA" --title "$TITLE" --generate-notes
 
   # After the release, so an image never names a driver version that was not

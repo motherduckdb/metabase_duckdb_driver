@@ -12,7 +12,15 @@ This driver is supported by [MotherDuck](https://motherduck.com/). If you would 
 
 ### Where to find it
 
-[Click here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest) to view the latest release of the Metabase DuckDB driver; click the link to download `duckdb.metabase-driver.jar`.
+[Click here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest) to view the latest release of the Metabase DuckDB driver. Each release ships three JAR variants — pick the one that matches the libc of the host running Metabase:
+
+| File | When to use it |
+| --- | --- |
+| `duckdb.metabase-driver.jar` | glibc-based hosts: macOS, Windows, Debian/Ubuntu/RHEL Linux, the [Debian-based Metabase Docker image](./Dockerfile) in this repo. **This is what most users want.** |
+| `duckdb-linux_amd64_musl.metabase-driver.jar` | musl-based Linux on x86_64 — most notably the **official Alpine-based Metabase Docker image** (`metabase/metabase`). |
+| `duckdb-linux_arm64_musl.metabase-driver.jar` | musl-based Linux on arm64 — the official Alpine-based Metabase image on Apple Silicon / arm64 hosts. |
+
+The musl variants bundle a DuckDB JNI binary built against musl libc, which is required when running inside Alpine Linux containers. Using `duckdb.metabase-driver.jar` (the glibc variant) on Alpine will fail to load with a glibc/loader error.
 
 You can find past releases of the DuckDB driver [here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases), and releases earlier than 0.2.6 (corresponding to DuckDB v0.10.0) [here](https://github.com/AlexR2D2/metabase_duckdb_driver/releases).
 
@@ -377,7 +385,10 @@ That pivots correctly at every grouping level.
 
 ## Docker
 
-Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Debian-based Docker image of Metabase where the DuckDB plugin does work.
+The official Metabase image (`metabase/metabase`) is Alpine-based and uses musl libc. Historically the DuckDB driver could not load there because it shipped only a glibc JNI binary. There are now two ways to run the driver under Docker:
+
+1. **Use the official Alpine Metabase image with the musl driver jar.** Mount `duckdb-linux_amd64_musl.metabase-driver.jar` (or the `arm64` variant, depending on your host architecture) into the plugins directory. Rename it to `duckdb.metabase-driver.jar` inside the container if you prefer — Metabase loads any `*.jar` in the plugins dir.
+2. **Use the Debian-based image**, pre-built or built from the [Dockerfile](./Dockerfile) in this repo. This bundles the glibc `duckdb.metabase-driver.jar` and is the original supported setup.
 
 ### Pre-built images
 
@@ -405,10 +416,10 @@ docker run --name metabase_duckdb -d -p 3000:3000 ghcr.io/motherduckdb/metabase-
 On Alpine the native DuckDB library fails to load — `Error loading shared
 library libstdc++.so.6` on the first attempt, then `Could not initialize class
 org.duckdb.DuckDBNative` on every attempt after. Installing packages does not
-fix it: `duckdb_jdbc` ships a glibc build and Alpine is musl. Use a glibc base
-image such as the one below.
+fix it: `duckdb_jdbc` ships a glibc build and Alpine is musl. Use one of the musl
+driver jars, or a glibc base image such as the one below.
 
-See the included [Dockerfile](./Dockerfile) for a complete setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
+See the included [Dockerfile](./Dockerfile) for the Debian-based setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
 
 ```bash
 # Build with default versions: the newest Metabase version in
@@ -458,7 +469,7 @@ Then run the **Release** workflow with the following parameters:
 - `version`: the first three numbers must match `duckdb_jdbc` in `deps.edn`, and the fourth counts driver releases on that DuckDB version (`1.5.6.0`, then `1.5.6.1` for a driver-only fix).
 - `dry_run`: run every check and smoke test, then only print the release command.
 
-The workflow fails if the tag already exists, the version does not match `deps.edn`, or the commit has no green `main` build. Otherwise it takes the jar from that build and smoke-tests it in an image for every version in `metabase_versions.json`. It then creates the tag `<version>` on the commit and publishes the release, titled `Metabase <newest listed> + DuckDB <x.y.z>`, with the jar attached and generated notes. `gh release create` publishes only after the jar is uploaded, so no release goes out without it. The images are pushed last; if a push fails, backfill it with **Build Container Images**.
+The workflow fails if the tag already exists, the version does not match `deps.edn`, or the commit has no green `main` build. Otherwise it takes the jar from that build and smoke-tests it in an image for every version in `metabase_versions.json`. It then creates the tag `<version>` on the commit and publishes the release, titled `Metabase <newest listed> + DuckDB <x.y.z>`, with the default and musl jars attached and generated notes. `gh release create` publishes only after the jars are uploaded, so no release goes out without them. The images are pushed last; if a push fails, backfill it with **Build Container Images**.
 
 The integration tests run with `continue-on-error`, so a green build does not mean they passed. Check their logs before releasing.
 
