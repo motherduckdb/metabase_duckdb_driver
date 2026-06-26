@@ -15,8 +15,6 @@ RUN mkdir -p /home/metabase/plugins /home/metabase/data && \
 
 WORKDIR /home/metabase
 
-FROM base
-
 # Build arguments declared here so base layers above are always cached
 ARG METABASE_VERSION=0.59.12
 ARG METABASE_DUCKDB_DRIVER_VERSION=1.5.2.0
