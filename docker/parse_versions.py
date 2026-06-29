@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Parse docker/versions.yml into a build matrix.
+"""Parse docker/versions.json into a build matrix.
+
+docker/versions.json maps each Metabase version (or series) to a list of
+compatible metabase_duckdb_driver versions. Each combination builds one image
+tagged <metabase>-duckdb<driver> (e.g. 0.59.12 + 1.5.2.0 → 0.59.12-duckdb1.5.2.0).
+
+  - Series keys (e.g. "v0.59") are expanded at build time to all matching patch
+    version tags found on Docker Hub (metabase/metabase).
+  - Specific version keys (e.g. "v0.60.0") are used as-is.
+
+Sources:
+    Metabase Docker Hub: https://hub.docker.com/r/metabase/metabase/tags
+    Driver releases:     https://github.com/motherduckdb/metabase_duckdb_driver/releases
 
 Usage:
     python3 docker/parse_versions.py [versions_file]          # TSV output (default)
@@ -18,12 +30,33 @@ import os
 import re
 import ssl
 import sys
-import certifi
-import yaml
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-_SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+
+def _ssl_context():
+    """SSL context using the system trust store, no third-party CA bundle.
+
+    create_default_context() honors SSL_CERT_FILE/SSL_CERT_DIR and the OpenSSL
+    default paths, which covers CI (ubuntu-latest) and Homebrew Python. Some
+    python.org macOS builds ship an empty default store (the bundled
+    "Install Certificates.command" was never run); in that case fall back to a
+    well-known system CA bundle so verification still works locally.
+    """
+    ctx = ssl.create_default_context()
+    if not ctx.get_ca_certs():
+        for path in (
+            '/etc/ssl/cert.pem',                    # macOS, BSD
+            '/etc/ssl/certs/ca-certificates.crt',   # Debian/Ubuntu
+            '/etc/pki/tls/certs/ca-bundle.crt',     # RHEL/Fedora
+        ):
+            if os.path.exists(path):
+                ctx.load_verify_locations(cafile=path)
+                break
+    return ctx
+
+
+_SSL_CTX = _ssl_context()
 _RELEASES_BASE = 'https://github.com/motherduckdb/metabase_duckdb_driver/releases/download'
 
 
@@ -69,7 +102,7 @@ def fetch_patch_versions(series):
 
 def load_combinations(versions_file):
     with open(versions_file) as f:
-        data = yaml.safe_load(f)
+        data = json.load(f)
 
     specific_versions = {key for key in data if not is_series(key)}
     combinations = []
@@ -98,7 +131,7 @@ def load_combinations(versions_file):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('versions_file', nargs='?', default='docker/versions.yml')
+    parser.add_argument('versions_file', nargs='?', default='docker/versions.json')
     parser.add_argument('--format', choices=['tsv', 'json'], default='tsv')
     args = parser.parse_args()
 

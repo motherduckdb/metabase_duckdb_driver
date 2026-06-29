@@ -6,7 +6,7 @@ on:
   push:
     branches: [main]
     paths:
-      - docker/versions.yml
+      - docker/versions.json
   workflow_dispatch:
 
 env:
@@ -21,12 +21,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Python dependencies
-        run: pip3 install -r docker/requirements.txt
-
-      - name: Parse versions.yml into build matrix
+      - name: Parse versions.json into build matrix
         id: parse
-        run: python3 docker/parse_versions.py --format json docker/versions.yml
+        run: python3 docker/parse_versions.py --format json docker/versions.json
 
   build:
     needs: [generate-matrix]

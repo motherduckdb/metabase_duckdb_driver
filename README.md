@@ -110,11 +110,11 @@ docker build . --tag metabase_duckdb:latest \
 
 ### Publishing new images (maintainers)
 
-The matrix of published images is defined in [docker/versions.yml](./docker/versions.yml). Each entry maps a Metabase series (e.g. `v0.59`) or specific version to a list of driver versions. Series keys are automatically expanded to all matching patch versions from Docker Hub.
+The matrix of published images is defined in [docker/versions.json](./docker/versions.json). Each entry maps a Metabase series (e.g. `v0.59`) or specific version to a list of driver versions. Series keys are automatically expanded to all matching patch versions from Docker Hub.
 
 Images are built and pushed to ghcr.io automatically when:
-- A new release is published (builds any combinations in `docker/versions.yml` that don't yet exist on ghcr.io)
-- `docker/versions.yml` is changed on `main` (e.g. adding a new Metabase series)
+- A new release is published (builds any combinations in `docker/versions.json` that don't yet exist on ghcr.io)
+- `docker/versions.json` is changed on `main` (e.g. adding a new Metabase series)
 
 Already-existing image tags are skipped; the `:latest` tag always points to the last entry in the expanded matrix.
 
