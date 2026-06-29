@@ -1,5 +1,6 @@
 # Metabase version → list of compatible metabase_duckdb_driver versions
 # Each combination builds one image tagged <metabase>-duckdb<driver>.
+# Example: metabase v0.59.12 + duckdb driver 1.5.2.0 → 0.59.12-duckdb1.5.2.0
 #
 # Series keys (e.g. v0.59) are expanded at build time to all matching patch
 # version tags found on Docker Hub (metabase/metabase).
