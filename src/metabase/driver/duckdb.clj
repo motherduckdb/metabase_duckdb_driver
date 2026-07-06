@@ -536,9 +536,3 @@
                          schema table_name)
               (fields-from-describe driver cloned-conn schema table_name))))))}))
 
-
-;; The 0.4.0 DuckDB JDBC .getImportedKeys method throws 'not implemented' yet.
-;; There is no support of FK yet.
-(defmethod driver/describe-table-fks :duckdb
-  [_ _ _]
-  nil)
