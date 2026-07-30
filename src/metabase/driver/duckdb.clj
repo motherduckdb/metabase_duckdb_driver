@@ -131,11 +131,14 @@
   "Metabase annotates effective connection details with internal keys that should
    not be forwarded to DuckDB as JDBC properties."
   [details]
-  (dissoc details
-          :metabase.driver.connection/effective-connection-type
-          :metabase.driver.connection/database-id
-          :destination-database
-          "destination-database"))
+  (m/filter-keys
+   (fn [k]
+     (not (or (#{:connection-pool-type "connection-pool-type"
+                 :destination-database "destination-database"} k)
+              (and (keyword? k) (some? (namespace k)))
+              (and (string? k) (or (str/starts-with? k "metabase.")
+                                   (str/starts-with? k "metabase/"))))))
+   details))
 
 (defn- jdbc-spec
   "Creates a spec for `clojure.java.jdbc` to use for connecting to DuckDB via JDBC from the given `opts`"
