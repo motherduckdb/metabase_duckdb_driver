@@ -110,20 +110,37 @@ docker build . --tag metabase_duckdb:latest \
 
 ### Publishing new images (maintainers)
 
-The matrix of published images is defined in [docker/versions.json](./docker/versions.json). Each entry maps a Metabase series (e.g. `v0.59`) or specific version to a list of driver versions. Series keys are automatically expanded to all matching patch versions from Docker Hub.
+The matrix of published images is defined in [docker/versions.json](./docker/versions.json), which lists each Metabase/driver combination explicitly:
 
-Images are built and pushed to ghcr.io automatically when:
-- A new release is published (builds any combinations in `docker/versions.json` that don't yet exist on ghcr.io)
-- `docker/versions.json` is changed on `main` (e.g. adding a new Metabase series)
-
-Already-existing image tags are skipped; the `:latest` tag always points to the last entry in the expanded matrix.
-
-To build and push images locally:
-
-```bash
-echo $GITHUB_TOKEN | docker login ghcr.io -u <your-github-username> --password-stdin
-PUSH=true ./docker/build.sh
+```json
+[
+  { "metabase_version": "0.62.7",  "driver_version": "1.5.4.0" },
+  { "metabase_version": "0.59.15", "driver_version": "1.5.4.0" }
+]
 ```
+
+Image tags are derived from these fields, so they can never drift from the versions they name. **The first entry is the newest by convention** and is the one that also receives the `:latest` tag. Already-existing tags are skipped, so re-running the workflow is safe and pushes nothing.
+
+Only list combinations known to work together. Metabase 0.63 is deliberately absent: v63 passes namespaced keywords in connection details, which driver 1.5.4.0 forwards to DuckDB as JDBC properties and fails to connect ([#103](https://github.com/motherduckdb/metabase_duckdb_driver/issues/103)). The fix is on `main` but unreleased, so 0.63 entries should be added in the same PR as the release that carries it.
+
+Images are built and pushed to ghcr.io when:
+- The **Add .jar file to a release** workflow succeeds — see the release procedure below
+- The workflow is dispatched manually, for combinations whose driver JAR is already published (e.g. adding a new Metabase version)
+
+#### Releasing a new driver version
+
+**Add the new driver to `docker/versions.json` before publishing the release, not after.** The ordering matters:
+
+1. Open a PR adding the new combinations to `docker/versions.json`, and merge it to `main`.
+2. Publish the release. Its tag must point at a commit with a successful `build_metabase_duckdb_driver.yaml` run, since the release-asset workflow fetches that artifact by commit SHA.
+3. **Add .jar file to a release** attaches `duckdb.metabase-driver.jar` to the release.
+4. On its success, **Build Container Images** runs and builds the new combinations.
+
+Step 4 depends on step 3: the image build downloads the driver JAR from the release, so it cannot run until the JAR is attached. The two workflows used to run in parallel on `release: published`, which raced — when the image build won, it silently skipped the driver whose JAR was not yet uploaded. Chaining removes the race, but it also means a release whose driver is not already listed in `versions.json` builds nothing.
+
+Adding a new Metabase version needs no release: edit `versions.json`, merge, then dispatch **Build Container Images** manually. There is deliberately no `push` trigger on `versions.json`, because a bump lands before its release, when the new driver's JAR does not exist yet.
+
+Both the target registry and the driver download URL are derived from the repository the workflow runs in, so the whole pipeline can be exercised on a fork without editing anything.
 
 ### Using DB file with Docker
 

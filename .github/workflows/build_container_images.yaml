@@ -1,19 +1,30 @@
 name: Build Container Images
 
 on:
-  release:
-    types: [published]
-  push:
-    branches: [main]
-    paths:
-      - docker/versions.json
+  # Chained after the release-asset workflow rather than triggered by the release
+  # directly. Images ADD the driver JAR from the release download URL, so this
+  # must not start until that JAR is attached -- running both on
+  # `release: published` raced, and the loser silently skipped the new driver.
+  # NOTE: `workflows` matches the upstream workflow's `name:` verbatim; renaming
+  # it in add_release_assets.yaml breaks this chain without any error.
+  workflow_run:
+    workflows: ["Add .jar file to a release"]
+    types: [completed]
+  # No push trigger by design: a versions.json bump lands *before* its release,
+  # when the new driver's JAR does not exist yet. Use dispatch for Metabase-only
+  # additions, whose JARs are already published.
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: ghcr.io/motherduckdb/metabase-duckdb
+  # Derived rather than hardcoded so a fork pushes to its own namespace with no
+  # edits to revert before opening a PR.
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/metabase-duckdb
 
 jobs:
   generate-matrix:
+    # workflow_run fires on failure and cancellation too, so guard on the
+    # conclusion. build needs this job, so skipping here skips the whole run.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.parse.outputs.matrix }}
@@ -21,9 +32,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse versions.json into build matrix
+      - name: Build matrix from versions.json
         id: parse
-        run: python3 docker/parse_versions.py --format json docker/versions.json
+        # Tags are derived here rather than stored in versions.json, so they
+        # cannot drift from the versions they name. The first entry is the newest
+        # by convention and is the one that also gets tagged :latest.
+        run: |
+          jq -c '{include: [.[] | . + {tag: "\(.metabase_version)-duckdb\(.driver_version)"}]}' \
+            docker/versions.json | sed 's/^/matrix=/' >> "$GITHUB_OUTPUT"
+          jq -r '"latest_tag=\(.[0].metabase_version)-duckdb\(.[0].driver_version)"' \
+            docker/versions.json >> "$GITHUB_OUTPUT"
 
   build:
     needs: [generate-matrix]
@@ -63,12 +81,14 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          # Also tag :latest when this is the newest combination. parse_versions.py
-          # sorts the matrix, so latest_tag is the highest version. The second line
-          # evaluates to '' for every other combination and build-push-action drops it.
+          # Also tag :latest when this is the newest combination. The first entry
+          # in versions.json is the newest by convention, and generate-matrix
+          # turns it into latest_tag. The second line evaluates to '' for every
+          # other combination and build-push-action drops it.
           tags: |
             ${{ env.IMAGE_NAME }}:${{ matrix.tag }}
             ${{ matrix.tag == needs.generate-matrix.outputs.latest_tag && format('{0}:latest', env.IMAGE_NAME) || '' }}
           build-args: |
             METABASE_VERSION=${{ matrix.metabase_version }}
             METABASE_DUCKDB_DRIVER_VERSION=${{ matrix.driver_version }}
+            METABASE_DUCKDB_DRIVER_REPO=${{ github.repository }}
