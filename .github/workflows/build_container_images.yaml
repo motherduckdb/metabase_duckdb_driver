@@ -1,19 +1,36 @@
 name: Build Container Images
 
 on:
-  # Chained after the release-asset workflow rather than triggered by the release
-  # directly. Images ADD the driver JAR from the release download URL, so this
-  # must not start until that JAR is attached -- running both on
-  # `release: published` raced, and the loser silently skipped the new driver.
-  # NOTE: `workflows` matches the upstream workflow's `name:` verbatim; renaming
-  # it in add_release_assets.yaml breaks this chain without any error.
-  workflow_run:
-    workflows: ["Add .jar file to a release"]
-    types: [completed]
-  # No push trigger by design: a versions.json bump lands *before* its release,
-  # when the new driver's JAR does not exist yet. Use dispatch for Metabase-only
-  # additions, whose JARs are already published.
+  # Manual only, one image per run. Every published image is an explicit choice
+  # of Metabase version + driver version rather than an entry in a stored matrix.
+  #
+  # ORDERING: images ADD the driver JAR from its release download URL, so a run
+  # dispatched before "Add .jar file to a release" has attached that JAR fails in
+  # the verify step below. Publish the release, let the asset workflow finish,
+  # then dispatch. (This used to be enforced by chaining off that workflow with
+  # `workflow_run`, which cannot pass inputs.)
   workflow_dispatch:
+    inputs:
+      metabase_version:
+        description: 'Metabase version, no "v" prefix (e.g. 0.62.7)'
+        required: true
+        type: string
+      driver_version:
+        description: 'Driver version; must equal the release tag (e.g. 1.5.4.0)'
+        required: true
+        type: string
+      tag_latest:
+        description: 'Tag as latest'
+        type: boolean
+        default: false
+      force_rebuild:
+        description: 'Overwrite the tag if it already exists'
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run'
+        type: boolean
+        default: false
 
 env:
   # Derived rather than hardcoded so a fork pushes to its own namespace with no
@@ -21,39 +38,34 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/metabase-duckdb
 
 jobs:
-  generate-matrix:
-    # workflow_run fires on failure and cancellation too, so guard on the
-    # conclusion. build needs this job, so skipping here skips the whole run.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.parse.outputs.matrix }}
-      latest_tag: ${{ steps.parse.outputs.latest_tag }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build matrix from versions.json
-        id: parse
-        # Tags are derived here rather than stored in versions.json, so they
-        # cannot drift from the versions they name. The first entry is the newest
-        # by convention and is the one that also gets tagged :latest.
-        run: |
-          jq -c '{include: [.[] | . + {tag: "\(.metabase_version)-duckdb\(.driver_version)"}]}' \
-            docker/versions.json | sed 's/^/matrix=/' >> "$GITHUB_OUTPUT"
-          jq -r '"latest_tag=\(.[0].metabase_version)-duckdb\(.[0].driver_version)"' \
-            docker/versions.json >> "$GITHUB_OUTPUT"
-
   build:
-    needs: [generate-matrix]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
-      fail-fast: false
 
     steps:
+      # First, before checkout/buildx/login, so a typo'd version fails in seconds
+      # instead of after a multi-platform build reaches its ADD instructions and
+      # reports an opaque "unexpected status code 404". Runs on dry_run too --
+      # confirming both JARs resolve is the main thing a dry run is good for.
+      - name: Verify artifacts exist
+        id: artifacts
+        run: |
+          mb_url="https://downloads.metabase.com/v${{ inputs.metabase_version }}/metabase.jar"
+          drv_url="https://github.com/${{ github.repository }}/releases/download/${{ inputs.driver_version }}/duckdb.metabase-driver.jar"
+
+          # Range GET rather than HEAD: release downloads redirect to a CDN that
+          # does not answer HEAD reliably.
+          curl -fsSL -r 0-0 -o /dev/null "$mb_url" \
+            || { echo "::error::No Metabase JAR at $mb_url"; exit 1; }
+          curl -fsSL -r 0-0 -o /dev/null "$drv_url" \
+            || { echo "::error::No driver JAR at $drv_url -- is the release published, and is duckdb.metabase-driver.jar attached to it?"; exit 1; }
+
+          # Derived here rather than taken as an input so the tag cannot drift
+          # from the versions it names.
+          echo "tag=${{ inputs.metabase_version }}-duckdb${{ inputs.driver_version }}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
@@ -65,30 +77,39 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Skipped when force_rebuild is set (the point is to overwrite) and when
+      # dry_run is set (nothing gets pushed, so an existing tag is irrelevant and
+      # skipping the build would defeat the dry run). A skipped step leaves
+      # `exists` empty, which the build's `!= 'true'` guard treats as "go".
       - name: Check if image already exists
         id: check
+        if: ${{ !inputs.force_rebuild && !inputs.dry_run }}
         run: |
-          if docker manifest inspect ${{ env.IMAGE_NAME }}:${{ matrix.tag }} > /dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
+          if docker manifest inspect "${{ env.IMAGE_NAME }}:${{ steps.artifacts.outputs.tag }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push
-        if: steps.check.outputs.exists == 'false'
+        if: steps.check.outputs.exists != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          # Also tag :latest when this is the newest combination. The first entry
-          # in versions.json is the newest by convention, and generate-matrix
-          # turns it into latest_tag. The second line evaluates to '' for every
-          # other combination and build-push-action drops it.
+          push: ${{ !inputs.dry_run }}
+          # :latest is opt-in per run, never inferred -- a rebuild of an older
+          # combination must not repoint it. The second line evaluates to '' when
+          # tag_latest is false and build-push-action drops it.
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ matrix.tag }}
-            ${{ matrix.tag == needs.generate-matrix.outputs.latest_tag && format('{0}:latest', env.IMAGE_NAME) || '' }}
+            ${{ env.IMAGE_NAME }}:${{ steps.artifacts.outputs.tag }}
+            ${{ inputs.tag_latest && format('{0}:latest', env.IMAGE_NAME) || '' }}
           build-args: |
-            METABASE_VERSION=${{ matrix.metabase_version }}
-            METABASE_DUCKDB_DRIVER_VERSION=${{ matrix.driver_version }}
+            METABASE_VERSION=${{ inputs.metabase_version }}
+            METABASE_DUCKDB_DRIVER_VERSION=${{ inputs.driver_version }}
             METABASE_DUCKDB_DRIVER_REPO=${{ github.repository }}
+
+      # Without this a skipped build is indistinguishable from a successful one
+      # in the run list.
+      - name: Report skipped build
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          echo "::notice::${{ env.IMAGE_NAME }}:${{ steps.artifacts.outputs.tag }} already exists; nothing pushed. Re-run with force_rebuild to overwrite it."
