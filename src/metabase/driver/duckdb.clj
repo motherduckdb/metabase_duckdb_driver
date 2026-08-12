@@ -153,8 +153,7 @@
           :subname           (or database_file "")
           "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
           "temp_directory"   (str database_file_base ".tmp")
-          "jdbc_stream_results" "true"
-          :TimeZone  "UTC"}
+          "jdbc_stream_results" "true"}
          (when (some? read_only)
            {"duckdb.read_only" (str read_only)})
          (when old_implicit_casting
@@ -203,9 +202,11 @@
      (when (not (sql-jdbc.execute/recursive-connection?))
        (when-let [init-sql (-> db-or-id-or-spec :details :init_sql)]
          (ensure-init-sql! conn init-sql)))
-     ;; Additionally set timezone if provided and we're not in a recursive connection
-     (when (and (or report-timezone session-timezone) (not (sql-jdbc.execute/recursive-connection?)))
-       (let [timezone-to-use (or report-timezone session-timezone)]
+     ;; Set the timezone here rather than as a connection property: TimeZone comes from the
+     ;; icu extension, and passing it at startup makes the whole connection fail when icu
+     ;; cannot be autoloaded (air-gapped installs). Here a failure only costs us UTC.
+     (when (not (sql-jdbc.execute/recursive-connection?))
+       (let [timezone-to-use (or report-timezone session-timezone "UTC")]
          (try
            (with-open [stmt (.createStatement conn)]
              (.execute stmt (format "SET TimeZone='%s';" timezone-to-use)))
