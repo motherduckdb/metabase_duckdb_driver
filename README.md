@@ -68,10 +68,72 @@ Right now, specifying alternative data path for a brand new ducklake database, l
 ### MotherDuck-hosted Ducklake
 If you're using a ducklake database on MotherDuck, it can be attached like a regular MotherDuck database, e.g. `md:my_ducklake_database`. 
 
+### Ducklake with an external catalog
+
+For a catalog that isn't a local file — Postgres, MySQL, or one behind a
+`ducklake` secret — put the `INSTALL`/`LOAD`/`ATTACH` statements in the **Init
+SQL** connection field (see below), not in the SQL editor:
+
+```sql
+INSTALL ducklake; LOAD ducklake;
+INSTALL postgres; LOAD postgres;
+ATTACH IF NOT EXISTS 'ducklake:postgres:dbname=catalog user=me password=secret host=pg port=5432'
+  AS my_lake (DATA_PATH 's3://my-bucket/my_lake/');
+USE my_lake;
+```
+
+## Init SQL
+
+The **Init SQL** connection field runs on every new DuckDB connection Metabase
+opens. Use it for whatever a connection needs before it can answer queries:
+installing and loading extensions, creating secrets, attaching catalogs.
+
+This matters because Metabase keeps a pool of connections and opens new ones as
+it goes. Running `ATTACH` once in the SQL editor only affects the connection
+that happened to serve that query. The attached tables can then show up in the
+data browser — a sync saw them — but fail with *table does not exist* when a
+later query lands on a connection that never ran the `ATTACH`, or after a
+restart. Init SQL is what makes an attachment stick.
+
+Statements run as one batch, so keep them ordered and idempotent
+(`CREATE OR REPLACE SECRET`, `ATTACH IF NOT EXISTS`, ...).
+
+### Attached catalogs need a search_path
+
+Metabase records a table's schema without its catalog, so a table in an
+attached catalog is only reachable if DuckDB can resolve it from the search
+path. Set one in Init SQL for every catalog you attach, or queries fail with
+`Catalog Error: Table with name <table> does not exist!` even though the table
+is listed in the data browser:
+
+```sql
+ATTACH IF NOT EXISTS '/data/second.duckdb' AS second;
+SET search_path='second.main,main';
+```
+
+## Changing the MotherDuck token
+
+DuckDB refuses to open the same database under a different configuration while
+connections to it are still open:
+
+```
+Connection Error: Can't open a connection to same database file with a
+different configuration than existing connections
+```
+
+Editing the token on an existing data source therefore does not take effect:
+Metabase goes on serving queries from pooled connections that still hold the
+old token. **Restart Metabase after changing a MotherDuck token.**
 
 ## Docker
 
 Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Dockerfile to create a Docker image of Metabase based on Debian where the DuckDB plugin does work.
+
+On Alpine the native DuckDB library fails to load — `Error loading shared
+library libstdc++.so.6` on the first attempt, then `Could not initialize class
+org.duckdb.DuckDBNative` on every attempt after. Installing packages does not
+fix it: `duckdb_jdbc` ships a glibc build and Alpine is musl. Use a glibc base
+image such as the one below.
 
 See the included [Dockerfile](./Dockerfile) for a complete setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
 
