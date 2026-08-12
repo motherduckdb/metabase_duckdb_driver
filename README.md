@@ -111,6 +111,48 @@ ATTACH IF NOT EXISTS '/data/second.duckdb' AS second;
 SET search_path='second.main,main';
 ```
 
+## Extensions on a restricted network
+
+Some extensions are compiled into the driver's `duckdb_jdbc` and work with no
+network at all: **icu**, **json** and **parquet** report
+`install_mode = STATICALLY_LINKED`. Everything else — **httpfs**, **ducklake**,
+**iceberg**, **postgres**, **motherduck** — is downloaded from
+`extensions.duckdb.org` on first use, into a directory DuckDB must be able to
+write.
+
+Two DuckDB settings control where that happens, and both can be set today in
+the **Additional DuckDB connection string options** field under Advanced
+options, `&`-separated:
+
+```
+home_directory=/var/lib/metabase/duck&extension_directory=/opt/duckdb-extensions
+```
+
+| Setting | What it does |
+| --- | --- |
+| `home_directory` | Where DuckDB resolves `~`; extensions land in `<home_directory>/.duckdb/extensions/`. Set this when the Metabase process has no writable home, otherwise installs fail with `IO Error: Can't find the home directory at '...'` |
+| `extension_directory` | The extension tree itself, independent of the home directory. Use it to point at a directory you pre-populated |
+
+### Pre-seeding, when extensions.duckdb.org is blocked
+
+Install the extensions once somewhere with network access, on the same driver
+version and platform, then ship the directory to the restricted host and point
+`extension_directory` at it:
+
+```sql
+SET extension_directory='/opt/duckdb-extensions';
+INSTALL httpfs; INSTALL ducklake; INSTALL iceberg; INSTALL motherduck;
+```
+
+The layout is pinned to version and platform, e.g.
+`/opt/duckdb-extensions/v1.5.5/linux_arm64/httpfs.duckdb_extension`, so re-seed
+it whenever the driver's bundled DuckDB version changes.
+
+Pre-seeding only removes the need to *download* an extension. It does not make
+MotherDuck work offline: `motherduck` loads from disk, but its initialisation
+still has to reach the MotherDuck service. So this helps where the extension
+repository is blocked and MotherDuck itself is reachable.
+
 ## Changing the MotherDuck token
 
 DuckDB refuses to open the same database under a different configuration while
