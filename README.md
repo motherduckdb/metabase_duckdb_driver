@@ -163,9 +163,13 @@ Connection Error: Can't open a connection to same database file with a
 different configuration than existing connections
 ```
 
-Editing the token on an existing data source therefore does not take effect:
-Metabase goes on serving queries from pooled connections that still hold the
-old token. **Restart Metabase after changing a MotherDuck token.**
+Metabase validates a data source by connecting before it saves. On an existing
+source its pool is still holding connections open with the old token, so that
+validation connection is refused and the save fails with the error above — the
+new token is never stored, and queries carry on using the old one.
+
+**Restart Metabase, then change the token.** A fresh process has no pool for
+that database, so the validation connection is the only one and it succeeds.
 
 ## Docker
 
