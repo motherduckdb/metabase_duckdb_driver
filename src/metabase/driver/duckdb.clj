@@ -204,14 +204,17 @@
          (ensure-init-sql! conn init-sql)))
      ;; Set the timezone here rather than as a connection property: TimeZone comes from the
      ;; icu extension, and passing it at startup makes the whole connection fail when icu
-     ;; cannot be autoloaded (air-gapped installs). Here a failure only costs us UTC.
+     ;; cannot be autoloaded (air-gapped installs). Failing here costs only the setting --
+     ;; but the session then runs in the JVM's zone, which silently shifts timestamps with
+     ;; a time zone, so say so. Without icu there is no way to pin the zone at all.
      (when (not (sql-jdbc.execute/recursive-connection?))
        (let [timezone-to-use (or report-timezone session-timezone "UTC")]
          (try
            (with-open [stmt (.createStatement conn)]
              (.execute stmt (format "SET TimeZone='%s';" timezone-to-use)))
            (catch Throwable e
-             (log/debugf e "Error setting timezone '%s' for DuckDB database" timezone-to-use)))))
+             (log/warnf e "Could not set DuckDB TimeZone to '%s'; this connection will use the server timezone instead"
+                        timezone-to-use)))))
      ;; Call the function with the configured connection
      (f conn))))
 
