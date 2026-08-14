@@ -63,7 +63,21 @@ ORDER BY averageRating * numVotes DESC
 
 Starting from driver version 1.4.1.0, you can configure the DuckDB data source to point to a ducklake database by setting the database file field to `ducklake:/path/to/db_name.ducklake`. This will also create a folder `/path/to/db_name.ducklake.files`, where the parquet files are stored.
 
-Right now, specifying alternative data path for a brand new ducklake database, like `ATTACH 'ducklake:my_other_ducklake.ducklake' AS my_other_ducklake (DATA_PATH 'some/other/path/');` is not natively supported. But you can first initialize the ducklake in SQL, using another duckdb client or within the Metabase SQL interface, with the target data path, then create the data source attaching the ducklake database already initialized with the target data path. 
+Right now, specifying alternative data path for a brand new ducklake database, like `ATTACH 'ducklake:my_other_ducklake.ducklake' AS my_other_ducklake (DATA_PATH '/some/other/path/');` is not natively supported. But you can first initialize the ducklake in SQL, using another duckdb client or within the Metabase SQL interface, with the target data path, then create the data source attaching the ducklake database already initialized with the target data path. 
+
+**Always give `DATA_PATH` an absolute path** (or an object-store URI). DuckLake
+stores it verbatim in the catalog and resolves a relative path against the
+*process* working directory, which for Metabase is its own container or service
+directory — not wherever you initialised the lake. Files written from another
+client are then unreadable, reporting `IO Error: Cannot open file
+"relative/path/….parquet": No such file or directory` even though the file is
+there, and the table still lists in the data browser because its metadata comes
+from the catalog. Under Docker the absolute path also has to be inside a mounted
+volume, or the parquet is written into the container and disappears when it is
+recreated.
+
+To repair a lake that already recorded a relative path, re-attach it once with
+`(DATA_PATH '/absolute/path/', OVERRIDE_DATA_PATH true)`.
 
 ### MotherDuck-hosted Ducklake
 If you're using a ducklake database on MotherDuck, it can be attached like a regular MotherDuck database, e.g. `md:my_ducklake_database`. 
@@ -93,10 +107,29 @@ it goes. Running `ATTACH` once in the SQL editor only affects the connection
 that happened to serve that query. The attached tables can then show up in the
 data browser — a sync saw them — but fail with *table does not exist* when a
 later query lands on a connection that never ran the `ATTACH`, or after a
-restart. Init SQL is what makes an attachment stick.
+restart. Init SQL is what gives every connection the same setup.
 
 Statements run as one batch, so keep them ordered and idempotent
 (`CREATE OR REPLACE SECRET`, `ATTACH IF NOT EXISTS`, ...).
+
+### Init SQL cannot rescue a `:memory:` database
+
+Each connection to `:memory:` is a **separate** DuckDB database, so anything a
+connection creates — a table, a secret, an attached catalog — is invisible to the
+others. Init SQL gives them all the same statements, but not the same state: a
+table created by one query is then missing from the next, depending on which
+connection serves it. Measured through Metabase, a table created seconds earlier
+was found by only 2 of 8 concurrent queries, while the same test against a
+file-based database file found it 8 out of 8.
+
+Worse, two connections cannot attach the same *file* catalog, because DuckDB
+allows one handle per file per process — so a file-based DuckLake catalog attached
+from Init SQL fails with `Unique file handle conflict`, which `IF NOT EXISTS`
+cannot avoid.
+
+So: give the data source a real database file, or point it straight at the lake
+with `ducklake:/path/to/catalog.ducklake`. Use `:memory:` only for stateless
+work, such as querying parquet by path.
 
 ### Attached catalogs need a search_path
 
