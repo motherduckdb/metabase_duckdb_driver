@@ -216,7 +216,7 @@ if([Region] = "EMEA", SumIf([Revenue], [Channel] = "Online") / SumIf([Revenue], 
 
 Metabase builds a pivot by running one query per grouping level. The level that
 rolls `Region` up drops it from the `GROUP BY` while the aggregation still
-references it, which is SQL no engine accepts:
+references it, which standard SQL forbids:
 
 ```
 Binder Error: column "region" must appear in the GROUP BY clause or must be
@@ -225,8 +225,9 @@ part of an aggregate function.
 
 Depending on the Metabase version the pivot either surfaces that error or
 silently renders no rows at all. This comes from Metabase's pivot rewrite rather
-than the driver — the same shape is rejected by Metabase's own H2 sample
-database, and no DuckDB version accepts it (reported upstream as
+than the driver — the same query also fails on Metabase's own H2 sample
+database (H2 enforces the rule at run time, DuckDB at bind time), and no DuckDB
+version accepts it (reported upstream as
 [metabase#73153](https://github.com/metabase/metabase/issues/73153)).
 
 **Workaround: keep the condition inside the aggregations**, so that nothing
