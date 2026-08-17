@@ -189,6 +189,53 @@
       (remove-keys-with-prefix "motherduck_token-")
       jdbc-spec))
 
+(defn- same-file-different-config-error?
+  "DuckDB allows one instance per database file per process: opening the same file with
+   changed settings (e.g. a rotated MotherDuck token) is refused while the old instance
+   has open connections."
+  [^Throwable e]
+  (boolean (some #(some-> (ex-message %) (str/includes? "with a different configuration"))
+                 (take-while some? (iterate #(.getCause ^Throwable %) e)))))
+
+(defn- database-ids-with-file
+  "Ids of saved DuckDB databases whose details point at `database-file`."
+  [database-file]
+  (let [select (requiring-resolve 'toucan2.core/select)]
+    (for [db (select :model/Database :engine "duckdb")
+          :when (= database-file (get-in db [:details :database_file]))]
+      (:id db))))
+
+(defmethod driver/can-connect? :duckdb
+  [driver details]
+  (try
+    (sql-jdbc.conn/can-connect? driver details)
+    (catch Throwable e
+      (let [db-ids (when (same-file-different-config-error? e)
+                     (seq (database-ids-with-file (:database_file details))))]
+        (when-not db-ids
+          (throw e))
+        ;; The user is saving changed details (e.g. a rotated token) for a database this
+        ;; process already holds open. Validation runs before the save, so without
+        ;; recycling the old pools here the new details could never be validated, let
+        ;; alone saved.
+        (log/warnf "Recycling connection pool(s) of database(s) %s to validate changed connection details; queries running at this moment will be interrupted"
+                   (str/join ", " db-ids))
+        (doseq [id db-ids]
+          (sql-jdbc.conn/invalidate-pool-for-db! id))
+        ;; c3p0 closes the evicted connections on helper threads, so the old instance can
+        ;; outlive invalidate-pool-for-db! by a moment; keep retrying while it does.
+        (loop [attempts-left 20]
+          (let [result (try
+                         (sql-jdbc.conn/can-connect? driver details)
+                         (catch Throwable retry-e
+                           (when-not (and (pos? attempts-left) (same-file-different-config-error? retry-e))
+                             (throw retry-e))
+                           ::old-instance-still-open))]
+            (if (= result ::old-instance-still-open)
+              (do (Thread/sleep 250)
+                  (recur (dec attempts-left)))
+              result)))))))
+
 (defmethod sql-jdbc.execute/do-with-connection-with-options :duckdb
   [driver db-or-id-or-spec {:keys [^String session-timezone report-timezone] :as options} f]
   ;; First use the parent implementation to get the connection with standard options
