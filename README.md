@@ -223,11 +223,12 @@ Binder Error: column "region" must appear in the GROUP BY clause or must be
 part of an aggregate function.
 ```
 
-Depending on the Metabase version the pivot either surfaces that error or
-silently renders no rows at all. This comes from Metabase's pivot rewrite rather
-than the driver — the same query also fails on Metabase's own H2 sample
-database (H2 enforces the rule at run time, DuckDB at bind time), and no DuckDB
-version accepts it (reported upstream as
+Depending on the surface, the pivot either shows that error or just renders
+empty — the pivot API reports the query as *completed* with zero rows while
+carrying the failure in its response details. This comes from Metabase's pivot
+rewrite rather than the driver — the same query fails identically on Metabase's
+own H2 sample database (H2 enforces the rule at run time, DuckDB at bind time),
+and no DuckDB version accepts it (reported upstream as
 [metabase#73153](https://github.com/metabase/metabase/issues/73153)).
 
 **Workaround: keep the condition inside the aggregations**, so that nothing
