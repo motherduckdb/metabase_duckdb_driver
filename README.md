@@ -204,6 +204,41 @@ new token is never stored, and queries carry on using the old one.
 **Restart Metabase, then change the token.** A fresh process has no pool for
 that database, so the validation connection is the only one and it succeeds.
 
+## Pivot tables and `if()` formulas
+
+A custom aggregation whose condition tests one of the question's own breakout
+columns renders fine as a table, then breaks when the visualisation is switched
+to pivot. With breakouts on `Sales Rep` and `Region`:
+
+```
+if([Region] = "EMEA", SumIf([Revenue], [Channel] = "Online") / SumIf([Revenue], [Channel] = "Retail"), Sum(0))
+```
+
+Metabase builds a pivot by running one query per grouping level. The level that
+rolls `Region` up drops it from the `GROUP BY` while the aggregation still
+references it, which is SQL no engine accepts:
+
+```
+Binder Error: column "region" must appear in the GROUP BY clause or must be
+part of an aggregate function.
+```
+
+Depending on the Metabase version the pivot either surfaces that error or
+silently renders no rows at all. This comes from Metabase's pivot rewrite rather
+than the driver — the same shape is rejected by Metabase's own H2 sample
+database, and no DuckDB version accepts it (reported upstream as
+[metabase#73153](https://github.com/metabase/metabase/issues/73153)).
+
+**Workaround: keep the condition inside the aggregations**, so that nothing
+outside an aggregate refers to a breakout column:
+
+```
+SumIf([Revenue], [Channel] = "Online" AND [Region] = "EMEA")
+  / SumIf([Revenue], [Channel] = "Retail" AND [Region] = "EMEA")
+```
+
+That pivots correctly at every grouping level.
+
 ## Docker
 
 Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Dockerfile to create a Docker image of Metabase based on Debian where the DuckDB plugin does work.
