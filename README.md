@@ -63,15 +63,193 @@ ORDER BY averageRating * numVotes DESC
 
 Starting from driver version 1.4.1.0, you can configure the DuckDB data source to point to a ducklake database by setting the database file field to `ducklake:/path/to/db_name.ducklake`. This will also create a folder `/path/to/db_name.ducklake.files`, where the parquet files are stored.
 
-Right now, specifying alternative data path for a brand new ducklake database, like `ATTACH 'ducklake:my_other_ducklake.ducklake' AS my_other_ducklake (DATA_PATH 'some/other/path/');` is not natively supported. But you can first initialize the ducklake in SQL, using another duckdb client or within the Metabase SQL interface, with the target data path, then create the data source attaching the ducklake database already initialized with the target data path. 
+Right now, specifying alternative data path for a brand new ducklake database, like `ATTACH 'ducklake:my_other_ducklake.ducklake' AS my_other_ducklake (DATA_PATH '/some/other/path/');` is not natively supported. But you can first initialize the ducklake in SQL, using another duckdb client or within the Metabase SQL interface, with the target data path, then create the data source attaching the ducklake database already initialized with the target data path. 
+
+**Always give `DATA_PATH` an absolute path** (or an object-store URI). DuckLake
+stores it verbatim in the catalog and resolves a relative path against the
+*process* working directory, which for Metabase is its own container or service
+directory — not wherever you initialised the lake. Files written from another
+client are then unreadable, reporting `IO Error: Cannot open file
+"relative/path/….parquet": No such file or directory` even though the file is
+there, and the table still lists in the data browser because its metadata comes
+from the catalog. Under Docker the absolute path also has to be inside a mounted
+volume, or the parquet is written into the container and disappears when it is
+recreated.
+
+To repair a lake that already recorded a relative path, re-attach it once with
+`(DATA_PATH '/absolute/path/', OVERRIDE_DATA_PATH true)`.
 
 ### MotherDuck-hosted Ducklake
 If you're using a ducklake database on MotherDuck, it can be attached like a regular MotherDuck database, e.g. `md:my_ducklake_database`. 
 
+### Ducklake with an external catalog
+
+For a catalog that isn't a local file — Postgres, MySQL, or one behind a
+`ducklake` secret — put the `INSTALL`/`LOAD`/`ATTACH` statements in the **Init
+SQL** connection field (see below), not in the SQL editor:
+
+```sql
+INSTALL ducklake; LOAD ducklake;
+INSTALL postgres; LOAD postgres;
+ATTACH IF NOT EXISTS 'ducklake:postgres:dbname=catalog user=me password=secret host=pg port=5432'
+  AS my_lake (DATA_PATH 's3://my-bucket/my_lake/');
+USE my_lake;
+```
+
+## Init SQL
+
+The **Init SQL** connection field runs on every new DuckDB connection Metabase
+opens. Use it for whatever a connection needs before it can answer queries:
+installing and loading extensions, creating secrets, attaching catalogs.
+
+This matters because Metabase keeps a pool of connections and opens new ones as
+it goes. Running `ATTACH` once in the SQL editor only affects the connection
+that happened to serve that query. The attached tables can then show up in the
+data browser — a sync saw them — but fail with *table does not exist* when a
+later query lands on a connection that never ran the `ATTACH`, or after a
+restart. Init SQL is what gives every connection the same setup.
+
+Statements run as one batch, so keep them ordered and idempotent
+(`CREATE OR REPLACE SECRET`, `ATTACH IF NOT EXISTS`, ...).
+
+### Init SQL cannot rescue a `:memory:` database
+
+Each connection to `:memory:` is a **separate** DuckDB database, so anything a
+connection creates — a table, a secret, an attached catalog — is invisible to the
+others. Init SQL gives them all the same statements, but not the same state: a
+table created by one query is then missing from the next, depending on which
+connection serves it. Measured through Metabase, a table created seconds earlier
+was found by only 2 of 8 concurrent queries, while the same test against a
+file-based database file found it 8 out of 8.
+
+Worse, two connections cannot attach the same *file* catalog, because DuckDB
+allows one handle per file per process — so a file-based DuckLake catalog attached
+from Init SQL fails with `Unique file handle conflict`, which `IF NOT EXISTS`
+cannot avoid.
+
+So: give the data source a real database file, or point it straight at the lake
+with `ducklake:/path/to/catalog.ducklake`. Use `:memory:` only for stateless
+work, such as querying parquet by path.
+
+### Attached catalogs need a search_path
+
+Metabase records a table's schema without its catalog, so a table in an
+attached catalog is only reachable if DuckDB can resolve it from the search
+path. Set one in Init SQL for every catalog you attach, or queries fail with
+`Catalog Error: Table with name <table> does not exist!` even though the table
+is listed in the data browser:
+
+```sql
+ATTACH IF NOT EXISTS '/data/second.duckdb' AS second;
+SET search_path='second.main,main';
+```
+
+## Extensions on a restricted network
+
+Some extensions are compiled into the driver's `duckdb_jdbc` and work with no
+network at all: **icu**, **json** and **parquet** report
+`install_mode = STATICALLY_LINKED`. Everything else — **httpfs**, **ducklake**,
+**iceberg**, **postgres**, **motherduck** — is downloaded from
+`extensions.duckdb.org` on first use, into a directory DuckDB must be able to
+write.
+
+Two DuckDB settings control where that happens, and both can be set today in
+the **Additional DuckDB connection string options** field under Advanced
+options, `&`-separated:
+
+```
+home_directory=/var/lib/metabase/duck&extension_directory=/opt/duckdb-extensions
+```
+
+| Setting | What it does |
+| --- | --- |
+| `home_directory` | Where DuckDB resolves `~`; extensions land in `<home_directory>/.duckdb/extensions/`. Set this when the Metabase process has no writable home, otherwise installs fail with `IO Error: Can't find the home directory at '...'` |
+| `extension_directory` | The extension tree itself, independent of the home directory. Use it to point at a directory you pre-populated |
+
+### Pre-seeding, when extensions.duckdb.org is blocked
+
+Install the extensions once somewhere with network access, on the same driver
+version and platform, then ship the directory to the restricted host and point
+`extension_directory` at it:
+
+```sql
+SET extension_directory='/opt/duckdb-extensions';
+INSTALL httpfs; INSTALL ducklake; INSTALL iceberg; INSTALL motherduck;
+```
+
+The layout is pinned to version and platform, e.g.
+`/opt/duckdb-extensions/v1.5.5/linux_arm64/httpfs.duckdb_extension`, so re-seed
+it whenever the driver's bundled DuckDB version changes.
+
+Pre-seeding only removes the need to *download* an extension. It does not make
+MotherDuck work offline: `motherduck` loads from disk, but its initialisation
+still has to reach the MotherDuck service. So this helps where the extension
+repository is blocked and MotherDuck itself is reachable.
+
+## Changing the MotherDuck token
+
+DuckDB refuses to open the same database under a different configuration while
+connections to it are still open:
+
+```
+Connection Error: Can't open a connection to same database file with a
+different configuration than existing connections
+```
+
+Metabase validates a data source by connecting before it saves. On an existing
+source its pool is still holding connections open with the old token, so that
+validation connection is refused and the save fails with the error above — the
+new token is never stored, and queries carry on using the old one.
+
+**Restart Metabase, then change the token.** A fresh process has no pool for
+that database, so the validation connection is the only one and it succeeds.
+
+## Pivot tables and `if()` formulas
+
+A custom aggregation whose condition tests one of the question's own breakout
+columns renders fine as a table, then breaks when the visualisation is switched
+to pivot. With breakouts on `Sales Rep` and `Region`:
+
+```
+if([Region] = "EMEA", SumIf([Revenue], [Channel] = "Online") / SumIf([Revenue], [Channel] = "Retail"), Sum(0))
+```
+
+Metabase builds a pivot by running one query per grouping level. The level that
+rolls `Region` up drops it from the `GROUP BY` while the aggregation still
+references it, which standard SQL forbids:
+
+```
+Binder Error: column "region" must appear in the GROUP BY clause or must be
+part of an aggregate function.
+```
+
+Depending on the surface, the pivot either shows that error or just renders
+empty — the pivot API reports the query as *completed* with zero rows while
+carrying the failure in its response details. This comes from Metabase's pivot
+rewrite rather than the driver — the same query fails identically on Metabase's
+own H2 sample database (H2 enforces the rule at run time, DuckDB at bind time),
+and no DuckDB version accepts it (reported upstream as
+[metabase#73153](https://github.com/metabase/metabase/issues/73153)).
+
+**Workaround: keep the condition inside the aggregations**, so that nothing
+outside an aggregate refers to a breakout column:
+
+```
+SumIf([Revenue], [Channel] = "Online" AND [Region] = "EMEA")
+  / SumIf([Revenue], [Channel] = "Retail" AND [Region] = "EMEA")
+```
+
+That pivots correctly at every grouping level.
 
 ## Docker
 
 Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Dockerfile to create a Docker image of Metabase based on Debian where the DuckDB plugin does work.
+
+On Alpine the native DuckDB library fails to load — `Error loading shared
+library libstdc++.so.6` on the first attempt, then `Could not initialize class
+org.duckdb.DuckDBNative` on every attempt after. Installing packages does not
+fix it: `duckdb_jdbc` ships a glibc build and Alpine is musl. Use a glibc base
+image such as the one below.
 
 See the included [Dockerfile](./Dockerfile) for a complete setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
 
