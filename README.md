@@ -12,7 +12,15 @@ This driver is supported by [MotherDuck](https://motherduck.com/). If you would 
 
 ### Where to find it
 
-[Click here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest) to view the latest release of the Metabase DuckDB driver; click the link to download `duckdb.metabase-driver.jar`.
+[Click here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest) to view the latest release of the Metabase DuckDB driver. Each release ships three JAR variants — pick the one that matches the libc of the host running Metabase:
+
+| File | When to use it |
+| --- | --- |
+| `duckdb.metabase-driver.jar` | glibc-based hosts: macOS, Windows, Debian/Ubuntu/RHEL Linux, the [Debian-based Metabase Docker image](./Dockerfile) in this repo. **This is what most users want.** |
+| `duckdb-linux_amd64_musl.metabase-driver.jar` | musl-based Linux on x86_64 — most notably the **official Alpine-based Metabase Docker image** (`metabase/metabase`). |
+| `duckdb-linux_arm64_musl.metabase-driver.jar` | musl-based Linux on arm64 — the official Alpine-based Metabase image on Apple Silicon / arm64 hosts. |
+
+The musl variants bundle a DuckDB JNI binary built against musl libc, which is required when running inside Alpine Linux containers. Using `duckdb.metabase-driver.jar` (the glibc variant) on Alpine will fail to load with a glibc/loader error.
 
 You can find past releases of the DuckDB driver [here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases), and releases earlier than 0.2.6 (corresponding to DuckDB v0.10.0) [here](https://github.com/AlexR2D2/metabase_duckdb_driver/releases).
 
@@ -71,9 +79,12 @@ If you're using a ducklake database on MotherDuck, it can be attached like a reg
 
 ## Docker
 
-Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Dockerfile to create a Docker image of Metabase based on Debian where the DuckDB plugin does work.
+The official Metabase image (`metabase/metabase`) is Alpine-based and uses musl libc. Historically the DuckDB driver could not load there because it shipped only a glibc JNI binary. There are now two ways to run the driver under Docker:
 
-See the included [Dockerfile](./Dockerfile) for a complete setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
+1. **Use the official Alpine Metabase image with the musl driver jar.** Mount `duckdb-linux_amd64_musl.metabase-driver.jar` (or the `arm64` variant, depending on your host architecture) into the plugins directory. Rename it to `duckdb.metabase-driver.jar` inside the container if you prefer — Metabase loads any `*.jar` in the plugins dir.
+2. **Use the Debian-based image built from the [Dockerfile](./Dockerfile) in this repo.** This bundles the glibc `duckdb.metabase-driver.jar` and is the original supported setup.
+
+See the included [Dockerfile](./Dockerfile) for the Debian-based setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
 
 ```bash
 # Build with default versions (see Dockerfile for the defaults)

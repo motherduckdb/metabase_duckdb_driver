@@ -1,3 +1,13 @@
+# Debian (glibc) Metabase image bundled with the DuckDB driver.
+#
+# This intentionally does NOT use the official metabase/metabase image,
+# which is Alpine-based (musl libc). The default duckdb.metabase-driver.jar
+# downloaded below ships a glibc-linked DuckDB JNI binary and will fail to
+# load on Alpine. If you need to run on the official Alpine image instead,
+# use one of the musl-classified jars from the release page:
+#   - duckdb-linux_amd64_musl.metabase-driver.jar  (x86_64 Alpine)
+#   - duckdb-linux_arm64_musl.metabase-driver.jar  (arm64 Alpine)
+# See README.md ("Where to find it") for details.
 FROM eclipse-temurin:21-jre-jammy
 
 # Build arguments for versions
