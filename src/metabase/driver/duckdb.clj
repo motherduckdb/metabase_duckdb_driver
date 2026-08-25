@@ -1,5 +1,6 @@
 (ns metabase.driver.duckdb
   (:require
+   [clojure.java.io :as io]
    [clojure.java.jdbc :as jdbc]
    [clojure.string :as str]
    [java-time.api :as t]
@@ -127,6 +128,22 @@
         [database-file additional-options])
       [database_file ""])))
 
+(defn- temp-directory
+  "Directory DuckDB may spill to. `<database file>.tmp` is only a usable directory for plain
+   file paths: for URL-style paths (`md:`, `ducklake:`, ...) and `:memory:` both this and
+   DuckDB's own default produce a bogus path, so spilling queries fail with
+   `Failed to create directory \"ducklake:...\"`. Those get a per-database directory under
+   `java.io.tmpdir` instead. A single leading letter (`C:\\...`) is a Windows drive, not a scheme."
+  [database_file_base]
+  (if (and (seq database_file_base)
+           (not (str/starts-with? database_file_base ":memory:"))
+           (not (re-find #"^[A-Za-z][A-Za-z0-9+.-]+:" database_file_base)))
+    (str database_file_base ".tmp")
+    (let [slug (str/replace database_file_base #"[^A-Za-z0-9._-]" "_")
+          slug (subs slug 0 (min 40 (count slug)))]
+      (str (io/file (System/getProperty "java.io.tmpdir")
+                    (format "metabase-duckdb-%s-%08x.tmp" slug (hash database_file_base)))))))
+
 (defn- remove-internal-connection-keys
   "Metabase annotates effective connection details with internal keys that should
    not be forwarded to DuckDB as JDBC properties."
@@ -152,7 +169,7 @@
           :subprotocol       "duckdb"
           :subname           (or database_file "")
           "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
-          "temp_directory"   (str database_file_base ".tmp")
+          "temp_directory"   (temp-directory database_file_base)
           "jdbc_stream_results" "true"
           :TimeZone  "UTC"}
          (when (some? read_only)
