@@ -270,7 +270,14 @@
 
 (defmethod sql-jdbc.sync/database-type->base-type :duckdb
   [_ field-type]
-  (database-type->base-type field-type))
+  (let [type-name (name field-type)]
+    (cond
+      ;; Nested types arrive as their full definition, e.g. STRUCT(started_at TIMESTAMP). Matched by substring against
+      ;; the scalar patterns above they would take the type of whichever field or element they happen to contain.
+      (re-find #"\[\d*\]$" type-name)        :type/Array
+      (re-find #"^(STRUCT|MAP)\(" type-name) :type/Dictionary
+      (re-find #"^UNION\(" type-name)        :type/*
+      :else                                  (database-type->base-type field-type))))
 
 (defn- local-time-to-time [^LocalTime lt]
   (Time. (.getLong lt ChronoField/MILLI_OF_DAY)))
