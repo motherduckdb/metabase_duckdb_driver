@@ -219,7 +219,17 @@
 
 (def ^:private database-type->base-type
   (sql-jdbc.sync/pattern-based-database-type->base-type
-   [[#"BOOLEAN"                  :type/Boolean]
+   ;; First match wins. Nested types arrive as their full definition, e.g. STRUCT(started_at TIMESTAMP), so they and
+   ;; the names that merely contain a scalar type name (INTERVAL, POINT_2D) go before the substring-matched scalars.
+   [[#"\[\d*\]$"                 :type/Array]
+    [#"^(?:STRUCT|MAP)\("        :type/Dictionary]
+    [#"^UNION\("                 :type/*]
+    [#"^ENUM\("                  :type/Text]
+    [#"^INTERVAL$"               :type/*]
+    [#"^BIGNUM$"                 :type/BigInteger]
+    [#"_2D$"                     :type/*]          ; spatial extension: POINT_2D, LINESTRING_2D, POLYGON_2D, BOX_2D
+    [#"^TIME WITH TIME ZONE$"    :type/TimeWithTZ]
+    [#"BOOLEAN"                  :type/Boolean]
     [#"BOOL"                     :type/Boolean]
     [#"LOGICAL"                  :type/Boolean]
     [#"HUGEINT"                  :type/BigInteger]
