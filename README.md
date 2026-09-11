@@ -71,28 +71,79 @@ If you're using a ducklake database on MotherDuck, it can be attached like a reg
 
 ## Docker
 
-Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Dockerfile to create a Docker image of Metabase based on Debian where the DuckDB plugin does work.
+Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Debian-based Docker image of Metabase where the DuckDB plugin does work.
+
+### Pre-built images
+
+Pre-built images are published to the GitHub Container Registry and are the easiest way to get started:
+
+```bash
+# Latest Metabase with the latest DuckDB driver
+docker pull ghcr.io/motherduckdb/metabase-duckdb:latest
+
+# Specific Metabase and driver version
+docker pull ghcr.io/motherduckdb/metabase-duckdb:0.59.12-duckdb1.5.2.0
+```
+
+Tags follow the pattern `<metabase_version>-duckdb<driver_version>`. Browse all available tags at [ghcr.io/motherduckdb/metabase-duckdb](https://github.com/motherduckdb/metabase_duckdb_driver/pkgs/container/metabase-duckdb).
+
+Start the container:
+
+```bash
+docker run --name metabase_duckdb -d -p 3000:3000 ghcr.io/motherduckdb/metabase-duckdb:latest
+# Then open http://localhost:3000
+```
+
+### Building locally
 
 See the included [Dockerfile](./Dockerfile) for a complete setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
 
 ```bash
-# Build with default versions (see Dockerfile for the defaults)
+# Build with default versions: the newest Metabase version in
+# metabase_versions.json + the driver version pinned in deps.edn
 docker build . --tag metabase_duckdb:latest
 
-# Build with specific versions
+# Build with a specific Metabase version and driver jar (a release URL or a
+# path inside the build context)
 docker build . --tag metabase_duckdb:latest \
-  --build-arg METABASE_VERSION=0.58.9 \
-  --build-arg METABASE_DUCKDB_DRIVER_VERSION=1.4.3.1
+  --build-arg METABASE_VERSION=0.59.12 \
+  --build-arg DUCKDB_DRIVER_URL=https://github.com/motherduckdb/metabase_duckdb_driver/releases/download/1.5.2.0/duckdb.metabase-driver.jar
 ```
 
-Then start the container:
-```bash
-docker run --name metabase_duckdb -d -p 3000:3000 metabase_duckdb
-```
+### Publishing new images (maintainers)
 
-Now open Metabase in the browser: http://localhost:3000. For detailed instructions on running the container, please see the official guide for [Running Metabase on Docker](https://www.metabase.com/docs/latest/installation-and-operation/running-metabase-on-docker).
+Which Metabase versions the driver supports is recorded in
+[metabase_versions.json](./metabase_versions.json), a plain list of versions.
 
+Images are built by the same workflow that builds the driver
+(`build_metabase_duckdb_driver.yaml`), always from the jar produced in that
+run, never from a release download:
 
+- Pull requests push `pr-<number>` (PRs from forks build without pushing).
+- Pushes to `main` push `main` and `sha-<short-sha>`.
+- Publishing a release attaches the jar to the release and pushes one image per
+  listed Metabase version, tagged `<metabase_version>-duckdb<driver_version>`,
+  with `:latest` going to the newest listed Metabase version.
+
+**Build Container Images** is a manual backfill tool for combining an
+already-published driver release with another Metabase version (e.g. a new
+Metabase release for an existing driver). It pulls the driver jar from that
+GitHub release and takes these inputs:
+
+| Input | Required | Default | Effect |
+| --- | --- | --- | --- |
+| `metabase_version` | yes | — | Metabase version, no `v` prefix (e.g. `0.63.10`) |
+| `driver_version` | yes | — | Driver version, which must equal its release tag (e.g. `1.5.5.0`) |
+| `tag_latest` | no | `false` | Also push `:latest` |
+| `force_rebuild` | no | `false` | Overwrite the tag if it already exists |
+| `dry_run` | no | `false` | Build both platforms but push nothing |
+
+#### Releasing a new driver version
+
+1. In one PR: bump `org.duckdb/duckdb_jdbc` in [deps.edn](./deps.edn) (this *is* the driver version), and [metabase_versions.json](./metabase_versions.json) if the supported range changed. The Dockerfile defaults to the newest listed Metabase version and the newest driver release, so it needs no edits. Merge to `main`.
+2. Publish the release, tagged with the bare new driver version (e.g. `1.5.5.0`), pointing at a commit that contains the updated `metabase_versions.json`. The workflow rejects a tag that does not match the driver version in `deps.edn`. The release run then builds the jar from the tagged commit, attaches it to the release, and pushes the images.
+
+Both the target registry and the driver download URL are derived from the repository the workflow runs in, so the whole pipeline can be exercised on a fork without editing anything.
 
 ### Using DB file with Docker
 
@@ -134,7 +185,7 @@ worktree of this repo, so a second branch does not re-download them.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MB_VERSION` | `0.58.9` | Metabase release `make dev` runs |
+| `MB_VERSION` | newest in `metabase_versions.json` | Metabase release `make dev` runs |
 | `MB_REF` | `master` | Metabase revision the driver is built and tested against |
 | `DRIVER_VERSION` | *(unset)* | Use a published driver release instead of a local build |
 | `DRIVERS` | `duckdb` | `make test DRIVERS=motherduck` runs the suite against MotherDuck (needs `motherduck_token`) |
