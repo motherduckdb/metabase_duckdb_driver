@@ -219,7 +219,12 @@
 
 (def ^:private database-type->base-type
   (sql-jdbc.sync/pattern-based-database-type->base-type
-   [[#"BOOLEAN"                  :type/Boolean]
+   ;; First match wins. Nested types arrive as their full definition, e.g. STRUCT(started_at TIMESTAMP), so they must
+   ;; be matched before the scalar patterns, which would otherwise pick up a field or element type from inside them.
+   [[#"\[\d*\]$"                 :type/Array]
+    [#"^(?:STRUCT|MAP)\("        :type/Dictionary]
+    [#"^UNION\("                 :type/*]
+    [#"BOOLEAN"                  :type/Boolean]
     [#"BOOL"                     :type/Boolean]
     [#"LOGICAL"                  :type/Boolean]
     [#"HUGEINT"                  :type/BigInteger]
@@ -270,14 +275,7 @@
 
 (defmethod sql-jdbc.sync/database-type->base-type :duckdb
   [_ field-type]
-  (let [type-name (name field-type)]
-    (cond
-      ;; Nested types arrive as their full definition, e.g. STRUCT(started_at TIMESTAMP). Matched by substring against
-      ;; the scalar patterns above they would take the type of whichever field or element they happen to contain.
-      (re-find #"\[\d*\]$" type-name)        :type/Array
-      (re-find #"^(STRUCT|MAP)\(" type-name) :type/Dictionary
-      (re-find #"^UNION\(" type-name)        :type/*
-      :else                                  (database-type->base-type field-type))))
+  (database-type->base-type field-type))
 
 (defn- local-time-to-time [^LocalTime lt]
   (Time. (.getLong lt ChronoField/MILLI_OF_DAY)))
