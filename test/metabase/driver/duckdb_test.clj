@@ -18,6 +18,7 @@
     (are [database-type base-type] (= base-type (sql-jdbc.sync/database-type->base-type :duckdb database-type))
       "INTERVAL"                      :type/*
       "ENUM('sad', 'ok', 'INTERNAL')" :type/Text
+      "ENUM('it''s', 'a)b', 'DATE', 'STRUCT(')" :type/Text
       "BIGNUM"                        :type/BigInteger
       "POINT_2D"                      :type/*
       "LINESTRING_2D"                 :type/*
