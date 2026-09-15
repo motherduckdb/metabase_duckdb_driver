@@ -7,6 +7,14 @@ on:
 
   workflow_dispatch:
 
+  release:
+    types: [published]
+
+env:
+  # Derived rather than hardcoded so a fork pushes to its own namespace with no
+  # edits to revert before opening a PR.
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/metabase-duckdb
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -122,3 +130,152 @@ jobs:
         motherduck_token: ${{ matrix.target == 'motherduck' && secrets.motherduck_ci_user_token || '' }}
       run: |
         DRIVERS=${{ matrix.target }} clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:test
+
+  # Every image below bakes in the jar this run just built, so image contents
+  # always match the source (and, on releases, the attached asset) exactly.
+  # Images for combinations with older driver releases are backfilled by hand
+  # via build_container_images.yaml instead.
+
+  add-release-asset:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v8
+      with:
+        name: metabase-duckdb-driver
+
+    - name: Add .jar artifact to release
+      uses: softprops/action-gh-release@v2.3.2
+      with:
+        generate_release_notes: true
+        files: duckdb.metabase-driver.jar
+
+  compat:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.read.outputs.versions }}
+      primary: ${{ steps.read.outputs.primary }}
+    steps:
+    - uses: actions/checkout@v6
+
+    # versions feeds the image build matrix; primary (the newest listed) also
+    # gets :latest. The release tag must match deps.edn, the single place the
+    # driver version is pinned.
+    - name: Read compatible Metabase versions
+      id: read
+      env:
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
+      run: |
+        driver="$(sed -n 's/.*duckdb_jdbc {:mvn\/version "\([^"]*\)".*/\1/p' deps.edn)"
+        if [ "$RELEASE_TAG" != "$driver" ]; then
+          echo "::error::Release tag $RELEASE_TAG does not match the driver version $driver in deps.edn"
+          exit 1
+        fi
+        {
+          echo "versions=$(jq -c . metabase_versions.json)"
+          echo "primary=$(jq -r 'sort_by(split(".") | map(tonumber)) | last' metabase_versions.json)"
+        } >> "$GITHUB_OUTPUT"
+
+  # Skipped on non-release events along with compat, its skipped dependency.
+  release-images:
+    needs: [build, compat]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        metabase_version: ${{ fromJSON(needs.compat.outputs.versions) }}
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/download-artifact@v8
+      with:
+        name: metabase-duckdb-driver
+        path: dist
+
+    - name: Compute image tags
+      id: meta
+      uses: docker/metadata-action@v6
+      with:
+        images: ${{ env.IMAGE_NAME }}
+        flavor: latest=false
+        tags: |
+          type=raw,value=${{ matrix.metabase_version }}-duckdb${{ github.event.release.tag_name }}
+          type=raw,value=latest,enable=${{ matrix.metabase_version == needs.compat.outputs.primary }}
+
+    - uses: docker/setup-buildx-action@v3
+
+    - name: Log in to ghcr.io
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          METABASE_VERSION=${{ matrix.metabase_version }}
+          DUCKDB_DRIVER_URL=dist/duckdb.metabase-driver.jar
+
+  dev-image:
+    needs: build
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      # Fork PRs get a read-only token, so those build the image without pushing.
+      PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/download-artifact@v8
+      with:
+        name: metabase-duckdb-driver
+        path: dist
+
+    # pr-<number> on pull requests; <branch> and sha-<short-sha> on pushes.
+    - name: Compute image tags
+      id: meta
+      uses: docker/metadata-action@v6
+      with:
+        images: ${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=pr
+          type=ref,event=branch
+          type=sha
+
+    - uses: docker/setup-buildx-action@v3
+
+    - name: Log in to ghcr.io
+      if: env.PUSH == 'true'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: ${{ env.PUSH == 'true' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          DUCKDB_DRIVER_URL=dist/duckdb.metabase-driver.jar
