@@ -134,7 +134,8 @@
   (m/filter-keys
    (fn [k]
      (not (or (#{:connection-pool-type "connection-pool-type"
-                 :destination-database "destination-database"} k)
+                 :destination-database "destination-database"
+                 :let-user-control-scheduling "let-user-control-scheduling"} k)
               (and (keyword? k) (some? (namespace k)))
               (and (string? k) (or (str/starts-with? k "metabase.")
                                    (str/starts-with? k "metabase/"))))))
