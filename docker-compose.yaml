@@ -7,7 +7,8 @@ services:
         METABASE_VERSION: ${MB_VERSION:-0.58.9}
         DUCKDB_DRIVER_URL: dist/duckdb.metabase-driver.jar
     ports:
-      - "3000:3000"
+      # MB_PORT lets a second worktree run its own Metabase side by side.
+      - "${MB_PORT:-3000}:3000"
     environment:
       # Keep the setup wizard, saved questions and connections across restarts.
       MB_DB_FILE: /home/metabase/data/metabase.db

@@ -3,6 +3,7 @@
 #   make dist                      = dist/duckdb.metabase-driver.jar from this working tree
 #   make dist DRIVER_VERSION=1.5.4 = ... or a published release instead of a local build
 #   make dev                       = Metabase + that jar on http://localhost:3000
+#   make dev MB_PORT=3100          = ... on another port, to run two worktrees at once
 #   make test                       = driver test suite against local DuckDB files
 #   make test DRIVERS=motherduck   = ... against MotherDuck (needs motherduck_token)
 #   make test TEST=metabase.driver.duckdb-test  = one namespace
@@ -16,11 +17,13 @@
 MB_REF     ?= master
 # metabase.jar release `make dev` runs.
 MB_VERSION ?= 0.58.9
+# Host port for `make dev`; change it to run two worktrees at once.
+MB_PORT    ?= 3000
 CLJ_IMAGE  ?= clojure:temurin-21-tools-deps
 DRIVERS    ?= duckdb
 TEST       ?=
 DRIVER_VERSION ?=
-export MB_VERSION
+export MB_VERSION MB_PORT
 
 # Shared by all worktrees of this repo, so a second branch reuses the ~600MB
 # Metabase checkout and the Maven cache instead of fetching them again.
@@ -45,11 +48,11 @@ PATCH = python3 modules/drivers/duckdb/ci/patch-metabase.py
 dev: $(JAR)
 	docker compose up -d --build
 	@printf "Waiting for Metabase to come up"; \
-	until [ "$$(curl -fsS http://localhost:3000/api/health 2>/dev/null)" = '{"status":"ok"}' ]; do \
+	until [ "$$(curl -fsS http://localhost:$(MB_PORT)/api/health 2>/dev/null)" = '{"status":"ok"}' ]; do \
 	  printf '.'; sleep 3; \
 	  docker compose ps --status running -q metabase | grep -q . || { echo " container died - make logs"; exit 1; }; \
 	done; \
-	echo " up: http://localhost:3000 (driver: $$(ls -la dist/*.jar | awk '{print $$5" bytes"}'))"
+	echo " up: http://localhost:$(MB_PORT) (driver: $$(ls -la dist/*.jar | awk '{print $$5" bytes"}'))"
 
 dist: $(JAR)
 
