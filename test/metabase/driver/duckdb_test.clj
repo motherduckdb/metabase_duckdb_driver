@@ -1,8 +1,15 @@
 (ns metabase.driver.duckdb-test
   (:require
-   [clojure.test :refer [are deftest testing]]
+   [clojure.test :refer [are deftest is testing]]
    [metabase.driver.duckdb]
+   [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
    [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]))
+
+(deftest connection-spec-omits-timezone-test
+  (testing "TimeZone is not a startup property: it comes from the icu extension, which cannot
+           be autoloaded on air-gapped installs, and there it fails the whole connection"
+    (let [spec (sql-jdbc.conn/connection-details->spec :duckdb {:database_file ":memory:"})]
+      (is (not-any? #{:TimeZone "TimeZone"} (keys spec))))))
 
 (deftest ^:parallel database-type->base-type-test
   (testing "nested types are typed as a whole, not by the scalar type names inside them"
