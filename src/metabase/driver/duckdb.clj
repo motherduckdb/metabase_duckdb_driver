@@ -510,7 +510,9 @@
      (sql-jdbc.execute/do-with-connection-with-options
       driver database nil
       (fn [conn]
-        (let [cloned-conn (clone-raw-connection conn)]
+        ;; The clone is a raw connection outside the pool: left open it keeps the DuckDB instance alive, which
+        ;; then refuses to reopen with changed details (see can-connect?).
+        (with-open [^java.sql.Connection cloned-conn (clone-raw-connection conn)]
           ;; Cloned connections don't inherit attachments, so we must run init SQL on them too.
           ;; This is critical for DuckLake where the catalog attachment is session-scoped.
           (ensure-init-sql! cloned-conn init-sql)
@@ -579,24 +581,24 @@
      (sql-jdbc.execute/do-with-connection-with-options
       driver database nil
       (fn [conn]
-        (let [cloned-conn (clone-raw-connection conn)
-              ;; Cloned connections don't inherit attachments, so we must run init SQL on them too.
-              _ (ensure-init-sql! cloned-conn init-sql)
-              results (jdbc/query {:connection cloned-conn} [get_columns_query])
+        (with-open [^java.sql.Connection cloned-conn (clone-raw-connection conn)]
+          (let [;; Cloned connections don't inherit attachments, so we must run init SQL on them too.
+                _ (ensure-init-sql! cloned-conn init-sql)
+                results (jdbc/query {:connection cloned-conn} [get_columns_query])
+                info-schema-fields
+                (set
+                 (for [[idx {column_name :column_name, data_type :data_type, column_comment :column_comment}] (m/indexed results)
+                       :let [base-type (sql-jdbc.sync/database-type->base-type driver (keyword data_type))]
+                       :when (some? base-type)]
+                   {:name              column_name
+                    :database-type     data_type
+                    :base-type         base-type
+                    :database-position idx
+                    :field-comment     column_comment}))]
+            (if (seq info-schema-fields)
               info-schema-fields
-              (set
-               (for [[idx {column_name :column_name, data_type :data_type, column_comment :column_comment}] (m/indexed results)
-                     :let [base-type (sql-jdbc.sync/database-type->base-type driver (keyword data_type))]
-                     :when (some? base-type)]
-                 {:name              column_name
-                  :database-type     data_type
-                  :base-type         base-type
-                  :database-position idx
-                  :field-comment     column_comment}))]
-          (if (seq info-schema-fields)
-            info-schema-fields
-            (do
-              (log/infof "No columns found in information_schema for %s.%s, falling back to DESCRIBE"
-                         schema table_name)
-              (fields-from-describe driver cloned-conn schema table_name))))))}))
+              (do
+                (log/infof "No columns found in information_schema for %s.%s, falling back to DESCRIBE"
+                           schema table_name)
+                (fields-from-describe driver cloned-conn schema table_name)))))))}))
 
