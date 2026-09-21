@@ -2,7 +2,10 @@ FROM eclipse-temurin:21-jre-jammy
 
 # Build arguments for versions
 ARG METABASE_VERSION=0.58.9
-ARG METABASE_DUCKDB_DRIVER_VERSION=1.4.3.1
+ARG METABASE_DUCKDB_DRIVER_VERSION=1.5.5.0
+# Point this at a jar in the build context to run a local build instead, e.g.
+#   docker build --build-arg DUCKDB_DRIVER_URL=dist/duckdb.metabase-driver.jar .
+ARG DUCKDB_DRIVER_URL=https://github.com/motherduckdb/metabase_duckdb_driver/releases/download/${METABASE_DUCKDB_DRIVER_VERSION}/duckdb.metabase-driver.jar
 
 ENV MB_PLUGINS_DIR=/home/metabase/plugins/
 
@@ -19,7 +22,7 @@ RUN mkdir -p /home/metabase/plugins /home/metabase/data && \
 
 WORKDIR /home/metabase
 ADD --chown=metabase:metabase https://downloads.metabase.com/v${METABASE_VERSION}/metabase.jar /home/metabase/
-ADD --chown=metabase:metabase https://github.com/motherduckdb/metabase_duckdb_driver/releases/download/${METABASE_DUCKDB_DRIVER_VERSION}/duckdb.metabase-driver.jar /home/metabase/plugins/
+ADD --chown=metabase:metabase ${DUCKDB_DRIVER_URL} /home/metabase/plugins/duckdb.metabase-driver.jar
 
 # Ensure proper file permissions
 RUN chmod 755 /home/metabase/metabase.jar && \

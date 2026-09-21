@@ -1,9 +1,0 @@
-diff --git a/modules/drivers/deps.edn b/modules/drivers/deps.edn
-index 98f65a210d..e0c8da9d68 100644
---- a/modules/drivers/deps.edn
-+++ b/modules/drivers/deps.edn
-@@ -24 +24,3 @@
--  metabase/vertica            {:local/root "vertica"}}}
-+  metabase/vertica            {:local/root "vertica"}
-+  metabase/duckdb             {:local/root "duckdb"}
-+  }}
