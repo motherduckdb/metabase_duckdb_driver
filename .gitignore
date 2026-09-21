@@ -12,3 +12,10 @@ duckdb-driver.iml
 .cpcache
 .clj-kondo
 .lsp
+
+# make dev/dist output
+/dist
+/data
+
+# git worktrees
+/.claude/

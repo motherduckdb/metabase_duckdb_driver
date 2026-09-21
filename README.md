@@ -110,47 +110,46 @@ Next, in the settings page of DuckDB of Metabase Web UI you could set your DB fi
 
 The same way you could mount the dir with parquet files into container and make SQL queries to this files using directory in your container.
 
-## How to build the DuckDB .jar plugin yourself
+## Development
 
-1. Install VS Code with [DevContainer](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension (see [details](https://code.visualstudio.com/docs/devcontainers/containers))
-2. Create some folder, let's say `duckdb_plugin`
-3. Clone the `metabase_duckdb_driver` repository into `duckdb_plugin` folder
-4. Copy `.devcontainer` from `duckdb_plugin/metabase_duckdb_driver` into `duckdb_plugin`
-5. Clone the `metabase` repository of version you need into `duckdb_plugin` folder
-6. Now content of the `duckdb_plugin` folder should looks like this:
+Everything runs in Docker; no local JDK, Clojure or Node needed.
+
+```bash
+make dist   # build dist/duckdb.metabase-driver.jar from this working tree
+make dev    # run Metabase with that jar on http://localhost:3000
+make test   # run the driver test suite
+make stop   # stop the dev Metabase
 ```
-  ..
-  .devcontainer
-  metabase
-  metabase_duckdb_driver
+
+`make dev` keeps its Metabase application database in `./data`, so connections
+and questions survive a restart. Drop `.duckdb` or `.parquet` files in `./data`
+to reach them from Metabase as `/home/metabase/data/<file>`. If
+`motherduck_token` is set in your shell it is passed through, so `md:` works
+with an empty token field.
+
+To iterate on the driver: edit `src/`, then run `make dev` again — it rebuilds
+the jar and restarts Metabase in about a minute. The Metabase checkout and the
+Maven cache live in `~/.cache/metabase-duckdb-driver` and are shared by every
+worktree of this repo, so a second branch does not re-download them.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MB_VERSION` | `0.58.9` | Metabase release `make dev` runs |
+| `MB_REF` | `master` | Metabase revision the driver is built and tested against |
+| `DRIVER_VERSION` | *(unset)* | Use a published driver release instead of a local build |
+| `DRIVERS` | `duckdb` | `make test DRIVERS=motherduck` runs the suite against MotherDuck (needs `motherduck_token`) |
+| `TEST` | *(unset)* | `make test TEST=metabase.driver.duckdb-test` for a single namespace |
+
+```bash
+make repl                       # Metabase REPL with the driver on the classpath
+make dev MB_VERSION=0.63.1      # reproduce a version-specific report
+make dev DRIVER_VERSION=1.5.4   # ... against a released driver, to bisect a regression
+make clean                      # drop dist/ and the dev container
+make distclean                  # also drop the cached Metabase checkout
 ```
-7. Add duckdb record to the deps file `duckdb_plugin/metabase/modules/drivers/deps.edn`
-The end of the file sholud looks like this:
-```
-  ...
-  metabase/sqlserver          {:local/root "sqlserver"}
-  metabase/vertica            {:local/root "vertica"}
-  metabase/duckdb             {:local/root "duckdb"}}}  <- add this!
-```
-8. Set the DuckDB version you need in the `duckdb_plugin/metabase_duckdb_driver/deps.edn`
-9. Create duckdb driver directory in the cloned metabase sourcecode (or symlink to where the driver is):
-```
-> mkdir -p duckdb_plugin/metabase/modules/drivers/duckdb
-```
-10. Copy the `metabase_duckdb_driver` source code into created dir (skip this if symlinked)
-```
-> cp -rf duckdb_plugin/metabase_duckdb_driver/* duckdb_plugin/metabase/modules/drivers/duckdb/
-```
-11. Open `duckdb_plugin` folder in VSCode using DevContainer extension (vscode will offer to open this folder using devcontainer). Wait until all stuff will be loaded. At the end you will get the terminal opened directly in the VS Code, smth like this:
-```
-vscode ➜ /workspaces/duckdb_plugin $
-```
-12. Build the plugin
-```
-vscode ➜ /workspaces/duckdb_plugin $ cd metabase
-vscode ➜ /workspaces/duckdb_plugin $ clojure -X:build:drivers:build/driver :driver :duckdb
-```
-13. jar file of DuckDB plugin will be generated here duckdb_plugin/metabase/resources/modules/duckdb.metabase-driver.jar
+
+A VS Code [DevContainer](.devcontainer) is also available if you prefer working
+inside the Metabase checkout directly.
 
 
 ## Acknowledgement

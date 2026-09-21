@@ -50,7 +50,7 @@ jobs:
     - name: Build driver
       working-directory: ./metabase
       run: |
-        git apply ./modules/drivers/duckdb/ci/metabase_drivers_deps.patch
+        python3 ./modules/drivers/duckdb/ci/patch-metabase.py
         chmod +x ./bin/build-driver.sh
         ./bin/build-driver.sh duckdb
         
@@ -105,42 +105,9 @@ jobs:
       with:
         cli: latest
 
-    - name: Patch Metabase test deps
+    - name: Register the driver in the Metabase checkout
       working-directory: ./metabase
-      run: |
-        python - <<'PY'
-        from pathlib import Path
-
-        def replace_once(path_str: str, old: str, new: str) -> None:
-            path = Path(path_str)
-            text = path.read_text()
-            if new in text:
-                return
-            if old not in text:
-                raise RuntimeError(f"Could not patch {path}: expected snippet not found")
-            path.write_text(text.replace(old, new, 1))
-
-        replace_once(
-            "deps.edn",
-            '    "modules/drivers/vertica/test"]}',
-            '    "modules/drivers/vertica/test"\n'
-            '    "modules/drivers/duckdb/test"\n'
-            '    ]}',
-        )
-        replace_once(
-            "modules/drivers/deps.edn",
-            '  metabase/vertica            {:local/root "vertica"}}}',
-            '  metabase/vertica            {:local/root "vertica"}\n'
-            '  metabase/duckdb             {:local/root "duckdb"}\n'
-            '  }}',
-        )
-        replace_once(
-            ".clj-kondo/config.edn",
-            '              :vertica}}',
-            '              :vertica\n'
-            '              :duckdb}}',
-        )
-        PY
+      run: python3 ./modules/drivers/duckdb/ci/patch-metabase.py
 
     - name: Build static viz
       if: matrix.target == 'motherduck'
