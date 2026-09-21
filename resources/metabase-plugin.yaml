@@ -38,6 +38,7 @@ driver:
       type: secret
       secret-kind: password
       required: false
+      helper-text: Saving a changed token closes this database's current connections; queries still running at that moment may fail and can simply be retried.
     - name: init_sql
       display-name: Init SQL (run on each new DuckDB instance)
       type: text

@@ -1,9 +1,31 @@
 (ns metabase.driver.duckdb-test
   (:require
+   [clojure.java.jdbc :as jdbc]
+   [clojure.string :as str]
    [clojure.test :refer [are deftest is testing]]
+   [metabase.driver :as driver]
    [metabase.driver.duckdb]
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
-   [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]))
+   [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
+   [metabase.test :as mt]))
+
+(deftest can-connect-recycles-conflicting-pool-test
+  (testing "validating changed details recycles the live pool instead of failing (token rotation flow):
+           DuckDB refuses to open the same file with a different configuration while the old
+           instance has open connections, which used to fail validation and so block the save"
+    (let [file (str (System/getProperty "java.io.tmpdir") "/pool-recycle-" (System/currentTimeMillis) ".db")]
+      (mt/with-temp [:model/Database db {:engine :duckdb, :details {:database_file file}}]
+        (try
+          ;; open a pooled connection the way a running Metabase holds one, then sync: describe-database and
+          ;; describe-table clone raw connections outside the pool, which used to leak and keep the instance alive
+          (jdbc/execute! (sql-jdbc.conn/db->pooled-connection-spec db) ["CREATE TABLE t (i INTEGER)"])
+          (driver/describe-database :duckdb db)
+          (driver/describe-table :duckdb db {:name "t", :schema "main"})
+          ;; same file, different config: without recycling this throws
+          ;; "Can't open a connection to same database file with a different configuration"
+          (is (true? (driver/can-connect? :duckdb {:database_file file, :read_only true})))
+          (finally
+            (sql-jdbc.conn/invalidate-pool-for-db! db)))))))
 
 (deftest connection-spec-omits-timezone-test
   (testing "TimeZone is not a startup property: it comes from the icu extension, which cannot
