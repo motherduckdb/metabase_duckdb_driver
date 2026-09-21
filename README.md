@@ -114,22 +114,17 @@ Statements run as one batch, so keep them ordered and idempotent
 
 ### Init SQL cannot rescue a `:memory:` database
 
-Each connection to `:memory:` is a **separate** DuckDB database, so anything a
-connection creates — a table, a secret, an attached catalog — is invisible to the
-others. Init SQL gives them all the same statements, but not the same state: a
-table created by one query is then missing from the next, depending on which
-connection serves it. Measured through Metabase, a table created seconds earlier
-was found by only 2 of 8 concurrent queries, while the same test against a
-file-based database file found it 8 out of 8.
-
-Worse, two connections cannot attach the same *file* catalog, because DuckDB
-allows one handle per file per process — so a file-based DuckLake catalog attached
-from Init SQL fails with `Unique file handle conflict`, which `IF NOT EXISTS`
-cannot avoid.
-
-So: give the data source a real database file, or point it straight at the lake
-with `ducklake:/path/to/catalog.ducklake`. Use `:memory:` only for stateless
-work, such as querying parquet by path.
+The data source should point to a real database file or lake with
+`ducklake:/path/to/catalog.ducklake`. Each connection to `:memory:` is a
+**separate** DuckDB database, so anything a connection creates — a table, a
+secret, an attached catalog — is invisible to the others. Init SQL gives them
+all the same statements, but not the same state: a table created by one query
+is missing from the next, depending on which connection serves it. Worse, two
+connections cannot attach the same *file* catalog, because DuckDB allows one
+handle per file per process — so a file-based DuckLake catalog attached from
+Init SQL fails with `Unique file handle conflict`, which `IF NOT EXISTS`cannot
+avoid. Therefore, use `:memory:` only for stateless work, such as querying
+parquet by path.
 
 ### Attached catalogs need a search_path
 
