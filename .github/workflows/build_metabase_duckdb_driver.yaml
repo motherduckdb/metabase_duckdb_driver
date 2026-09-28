@@ -67,7 +67,9 @@ jobs:
       fail-fast: false
       matrix:
         target: [motherduck, duckdb]
-    name: integration (${{ matrix.target }})
+        # Metabase's full suite is ~21k tests, close to an hour in one lane; the test runner splits it deterministically.
+        partition: [0, 1, 2]
+    name: integration (${{ matrix.target }} ${{ matrix.partition }})
 
     steps:
     - name: Clone Metabase repository
@@ -121,4 +123,5 @@ jobs:
       env:
         motherduck_token: ${{ matrix.target == 'motherduck' && secrets.motherduck_ci_user_token || '' }}
       run: |
-        DRIVERS=${{ matrix.target }} clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:test
+        DRIVERS=${{ matrix.target }} clojure -X:dev:ci:ee:ee-dev:drivers:drivers-dev:test \
+          :partition/total 3 :partition/index ${{ matrix.partition }}
