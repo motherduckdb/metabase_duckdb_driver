@@ -170,8 +170,8 @@
           :subprotocol       "duckdb"
           ;; DuckDB caches one instance per path and refuses to reopen it with other settings while it lives, and the
           ;; MotherDuck extension keeps it alive for 15 minutes after the last connection closes. A key that is unique
-          ;; per spec (so per pool) gives changed details a fresh instance right away, while queries on the old pool
-          ;; finish undisturbed; the TTL of 0 then frees the old instance as soon as its last connection closes.
+          ;; per spec (so per pool) gives changed details a fresh instance right away instead of a conflict with the old
+          ;; one, which may still have connections open; the TTL of 0 then frees it as soon as its last one closes.
           ;; MotherDuck ignores the unknown parameter. Same recipe as pgendpoint.
           :subname           (cond-> (or database_file "")
                                motherduck? (str (if (str/includes? database_file "?") "&" "?") "cache_bust=" (random-uuid)))
