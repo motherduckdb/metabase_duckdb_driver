@@ -9,6 +9,23 @@
    [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
    [metabase.test :as mt]))
 
+(deftest motherduck-spec-gets-its-own-instance-test
+  (testing "each MotherDuck spec carries a unique cache key and no instance TTL, so changed details open a fresh
+           instance instead of colliding with the cached one the extension would otherwise keep for 15 minutes"
+    (let [spec #(sql-jdbc.conn/connection-details->spec :duckdb {:database_file "md:my_db"})
+          a    (spec)
+          b    (spec)]
+      (is (re-find #"^md:my_db\?cache_bust=[0-9a-f-]{36}$" (:subname a)))
+      (is (not= (:subname a) (:subname b)))
+      (is (= "0s" (get a "motherduck_dbinstance_inactivity_ttl")))))
+  (testing "options already on the path are kept"
+    (is (re-find #"^md:my_db\?read_only=true&cache_bust="
+                 (:subname (sql-jdbc.conn/connection-details->spec :duckdb {:database_file "md:my_db?read_only=true"})))))
+  (testing "local files are keyed by their path and get neither"
+    (let [spec (sql-jdbc.conn/connection-details->spec :duckdb {:database_file "/data/warehouse.db"})]
+      (is (= "/data/warehouse.db" (:subname spec)))
+      (is (nil? (get spec "motherduck_dbinstance_inactivity_ttl"))))))
+
 (deftest can-connect-recycles-conflicting-pool-test
   (testing "validating changed details recycles the live pool instead of failing (token rotation flow):
            DuckDB refuses to open the same file with a different configuration while the old
