@@ -173,7 +173,7 @@ INSTALL httpfs; INSTALL ducklake; INSTALL iceberg; INSTALL motherduck;
 ```
 
 The layout is pinned to version and platform, e.g.
-`/opt/duckdb-extensions/v1.5.5/linux_arm64/httpfs.duckdb_extension`, so re-seed
+`/opt/duckdb-extensions/v1.5.6/linux_arm64/httpfs.duckdb_extension`, so re-seed
 it whenever the driver's bundled DuckDB version changes.
 
 Pre-seeding only removes the need to *download* an extension. It does not make
