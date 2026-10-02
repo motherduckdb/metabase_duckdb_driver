@@ -214,6 +214,22 @@ jobs:
 
     - uses: docker/setup-buildx-action@v3
 
+    # Metabase loads the driver lazily, so this also adds a DuckDB database and runs a query. amd64 only: buildx cannot
+    # load a multi-platform image, and arm64 under emulation boots Metabase far too slowly. The push below reuses the cache.
+    - name: Build amd64 image for the smoke test
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        platforms: linux/amd64
+        load: true
+        tags: metabase-duckdb:smoke
+        build-args: |
+          METABASE_VERSION=${{ matrix.metabase_version }}
+          DUCKDB_DRIVER_URL=dist/duckdb.metabase-driver.jar
+
+    - name: Smoke test
+      run: python3 ci/smoke_image.py metabase-duckdb:smoke
+
     - name: Log in to ghcr.io
       uses: docker/login-action@v3
       with:
@@ -263,6 +279,21 @@ jobs:
           type=sha
 
     - uses: docker/setup-buildx-action@v3
+
+    # Metabase loads the driver lazily, so this also adds a DuckDB database and runs a query. amd64 only: buildx cannot
+    # load a multi-platform image, and arm64 under emulation boots Metabase far too slowly. The push below reuses the cache.
+    - name: Build amd64 image for the smoke test
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        platforms: linux/amd64
+        load: true
+        tags: metabase-duckdb:smoke
+        build-args: |
+          DUCKDB_DRIVER_URL=dist/duckdb.metabase-driver.jar
+
+    - name: Smoke test
+      run: python3 ci/smoke_image.py metabase-duckdb:smoke
 
     - name: Log in to ghcr.io
       if: env.PUSH == 'true'
