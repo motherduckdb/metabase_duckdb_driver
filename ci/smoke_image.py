@@ -50,7 +50,7 @@ def smoke(base):
         try:
             if api(base, "GET", "/api/health").get("status") == "ok":
                 break
-        except (urllib.error.URLError, ConnectionError):
+        except (RuntimeError, urllib.error.URLError, ConnectionError):  # 503 while booting, refused before that
             pass
         if time.monotonic() > deadline:
             raise RuntimeError(f"Metabase not healthy after {BOOT_TIMEOUT_S}s")
