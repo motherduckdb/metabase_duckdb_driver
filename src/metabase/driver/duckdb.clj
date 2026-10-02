@@ -1,5 +1,6 @@
 (ns metabase.driver.duckdb
   (:require
+   [clojure.java.io :as io]
    [clojure.java.jdbc :as jdbc]
    [clojure.string :as str]
    [java-time.api :as t]
@@ -127,6 +128,22 @@
         [database-file additional-options])
       [database_file ""])))
 
+(defn- temp-directory
+  "Directory DuckDB may spill to. `<database file>.tmp` is only a usable directory for plain
+   file paths: for URL-style paths (`md:`, `ducklake:`, ...) and `:memory:` both this and
+   DuckDB's own default produce a bogus path, so spilling queries fail with
+   `Failed to create directory \"ducklake:...\"`. Those get a per-database directory under
+   `java.io.tmpdir` instead. A single leading letter (`C:\\...`) is a Windows drive, not a scheme."
+  [database_file_base]
+  (if (and (seq database_file_base)
+           (not (str/starts-with? database_file_base ":memory:"))
+           (not (re-find #"^[A-Za-z][A-Za-z0-9+.-]+:" database_file_base)))
+    (str database_file_base ".tmp")
+    (let [slug (str/replace database_file_base #"[^A-Za-z0-9._-]" "_")
+          slug (subs slug 0 (min 40 (count slug)))]
+      (str (io/file (System/getProperty "java.io.tmpdir")
+                    (format "metabase-duckdb-%s-%08x.tmp" slug (hash database_file_base)))))))
+
 (defn- remove-internal-connection-keys
   "Metabase annotates effective connection details with internal keys that should
    not be forwarded to DuckDB as JDBC properties."
@@ -152,9 +169,8 @@
           :subprotocol       "duckdb"
           :subname           (or database_file "")
           "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
-          "temp_directory"   (str database_file_base ".tmp")
-          "jdbc_stream_results" "true"
-          :TimeZone  "UTC"}
+          "temp_directory"   (temp-directory database_file_base)
+          "jdbc_stream_results" "true"}
          (when (some? read_only)
            {"duckdb.read_only" (str read_only)})
          (when old_implicit_casting
@@ -203,14 +219,19 @@
      (when (not (sql-jdbc.execute/recursive-connection?))
        (when-let [init-sql (-> db-or-id-or-spec :details :init_sql)]
          (ensure-init-sql! conn init-sql)))
-     ;; Additionally set timezone if provided and we're not in a recursive connection
-     (when (and (or report-timezone session-timezone) (not (sql-jdbc.execute/recursive-connection?)))
-       (let [timezone-to-use (or report-timezone session-timezone)]
+     ;; Set the timezone here rather than as a connection property: TimeZone comes from the
+     ;; icu extension, and passing it at startup makes the whole connection fail when icu
+     ;; cannot be autoloaded (air-gapped installs). Failing here costs only the setting --
+     ;; but the session then runs in the JVM's zone, which silently shifts timestamps with
+     ;; a time zone, so say so. Without icu there is no way to pin the zone at all.
+     (when (not (sql-jdbc.execute/recursive-connection?))
+       (let [timezone-to-use (or report-timezone session-timezone "UTC")]
          (try
            (with-open [stmt (.createStatement conn)]
              (.execute stmt (format "SET TimeZone='%s';" timezone-to-use)))
            (catch Throwable e
-             (log/debugf e "Error setting timezone '%s' for DuckDB database" timezone-to-use)))))
+             (log/warnf e "Could not set DuckDB TimeZone to '%s'; this connection will use the server timezone instead"
+                        timezone-to-use)))))
      ;; Call the function with the configured connection
      (f conn))))
 
@@ -219,7 +240,17 @@
 
 (def ^:private database-type->base-type
   (sql-jdbc.sync/pattern-based-database-type->base-type
-   [[#"BOOLEAN"                  :type/Boolean]
+   ;; First match wins. Nested types arrive as their full definition, e.g. STRUCT(started_at TIMESTAMP), so they and
+   ;; the names that merely contain a scalar type name (INTERVAL, POINT_2D) go before the substring-matched scalars.
+   [[#"\[\d*\]$"                 :type/Array]
+    [#"^(?:STRUCT|MAP)\("        :type/Dictionary]
+    [#"^UNION\("                 :type/*]
+    [#"^ENUM\("                  :type/Text]
+    [#"^INTERVAL$"               :type/*]
+    [#"^BIGNUM$"                 :type/BigInteger]
+    [#"_2D$"                     :type/*]          ; spatial extension: POINT_2D, LINESTRING_2D, POLYGON_2D, BOX_2D
+    [#"^TIME WITH TIME ZONE$"    :type/TimeWithTZ]
+    [#"BOOLEAN"                  :type/Boolean]
     [#"BOOL"                     :type/Boolean]
     [#"LOGICAL"                  :type/Boolean]
     [#"HUGEINT"                  :type/BigInteger]
