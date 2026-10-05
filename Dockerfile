@@ -27,10 +27,10 @@ RUN mb="${METABASE_VERSION:-$(jq -r 'sort_by(split(".") | map(tonumber)) | last'
     chown metabase:metabase metabase.jar && \
     chmod 755 metabase.jar
 
-# Where the driver jar comes from: the newest release by default; CI passes the
-# exact release URL of the version it is building (which also points forks at
-# their own releases). Point it at a jar in the build context to run a local
-# build instead, e.g.
+# Where the driver jar comes from: the newest release by default. CI passes the
+# jar it just built (dist/duckdb.metabase-driver.jar); the backfill workflow
+# passes the URL of an existing release. Point it at a jar in the build context
+# to run a local build instead, e.g.
 #   docker build --build-arg DUCKDB_DRIVER_URL=dist/duckdb.metabase-driver.jar .
 # Declared after the RUN above so changing it does not re-download metabase.jar.
 ARG DUCKDB_DRIVER_URL=https://github.com/motherduckdb/metabase_duckdb_driver/releases/latest/download/duckdb.metabase-driver.jar

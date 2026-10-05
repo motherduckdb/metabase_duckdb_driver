@@ -249,7 +249,7 @@ Pre-built images are published to the GitHub Container Registry and are the easi
 docker pull ghcr.io/motherduckdb/metabase-duckdb:latest
 
 # Specific Metabase and driver version
-docker pull ghcr.io/motherduckdb/metabase-duckdb:0.59.12-duckdb1.5.2.0
+docker pull ghcr.io/motherduckdb/metabase-duckdb:0.63.17-duckdb1.5.5.0
 ```
 
 Tags follow the pattern `<metabase_version>-duckdb<driver_version>`. Browse all available tags at [ghcr.io/motherduckdb/metabase-duckdb](https://github.com/motherduckdb/metabase_duckdb_driver/pkgs/container/metabase-duckdb).
@@ -273,7 +273,7 @@ See the included [Dockerfile](./Dockerfile) for a complete setup. You can build 
 
 ```bash
 # Build with default versions: the newest Metabase version in
-# metabase_versions.json + the driver version pinned in deps.edn
+# metabase_versions.json + the latest driver release
 docker build . --tag metabase_duckdb:latest
 
 # Build with a specific Metabase version and driver jar (a release URL or a
