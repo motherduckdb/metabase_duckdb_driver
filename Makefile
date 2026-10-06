@@ -15,8 +15,8 @@
 
 # Metabase revision the driver is built and tested against.
 MB_REF     ?= master
-# metabase.jar release `make dev` runs.
-MB_VERSION ?= 0.58.9
+# metabase.jar release `make dev` runs; empty = newest in metabase_versions.json.
+MB_VERSION ?=
 # Host port for `make dev`; change it to run two worktrees at once.
 MB_PORT    ?= 3000
 CLJ_IMAGE  ?= clojure:temurin-21-tools-deps

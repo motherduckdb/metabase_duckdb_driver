@@ -4,7 +4,7 @@ services:
     build:
       context: .
       args:
-        METABASE_VERSION: ${MB_VERSION:-0.58.9}
+        METABASE_VERSION: ${MB_VERSION:-}
         DUCKDB_DRIVER_URL: dist/duckdb.metabase-driver.jar
     ports:
       # MB_PORT lets a second worktree run its own Metabase side by side.
