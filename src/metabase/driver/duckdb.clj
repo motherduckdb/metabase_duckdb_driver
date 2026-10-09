@@ -162,13 +162,20 @@
   "Creates a spec for `clojure.java.jdbc` to use for connecting to DuckDB via JDBC from the given `opts`"
   [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting,
            motherduck_token, memory_limit, azure_transport_option_type, attach_mode], :as details}]
-  (let [[database_file_base database_file_additional_options] (database-file-path-split database_file)]
+  (let [[database_file_base database_file_additional_options] (database-file-path-split database_file)
+        motherduck? (boolean (re-find #"^md:" (or database_file "")))]
     (-> details
         remove-internal-connection-keys
         (merge
          {:classname         "org.duckdb.DuckDBDriver"
           :subprotocol       "duckdb"
-          :subname           (or database_file "")
+          ;; DuckDB caches one instance per path and refuses to reopen it with other settings while it lives, and the
+          ;; MotherDuck extension keeps it alive for 15 minutes after the last connection closes. A key that is unique
+          ;; per spec (so per pool) gives changed details a fresh instance right away instead of a conflict with the old
+          ;; one, which may still have connections open; the TTL of 0 then frees it as soon as its last one closes.
+          ;; MotherDuck ignores the unknown parameter. Same recipe as pgendpoint.
+          :subname           (cond-> (or database_file "")
+                               motherduck? (str (if (str/includes? database_file "?") "&" "?") "cache_bust=" (random-uuid)))
           "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
           "temp_directory"   (temp-directory database_file_base)
           "jdbc_stream_results" "true"}
@@ -182,11 +189,12 @@
            {"azure_transport_option_type" (str azure_transport_option_type)})
          (when allow_unsigned_extensions
            {"allow_unsigned_extensions" (str allow_unsigned_extensions)})
-         (when (seq (re-find #"^md:" database_file))
+         (when motherduck?
             ;; attach_mode option is not settable by the user, it's always single mode when
             ;; using motherduck, but in tests we need to be able to connect to motherduck in
             ;; workspace mode, so it's handled here.
-           {"motherduck_attach_mode"  (or attach_mode "single")})    ;; when connecting to MotherDuck, explicitly connect to a single database
+           {"motherduck_attach_mode"  (or attach_mode "single")    ;; when connecting to MotherDuck, explicitly connect to a single database
+            "motherduck_dbinstance_inactivity_ttl" "0s"})
          (when (seq motherduck_token)     ;; Only configure the option if token is provided
            {"motherduck_token" motherduck_token})
          (sql-jdbc.common/additional-options->map (:additional-options details) :url)
@@ -205,6 +213,53 @@
       (merge {:motherduck_token (get-motherduck-token details-map)})
       (remove-keys-with-prefix "motherduck_token-")
       jdbc-spec))
+
+(defn- same-file-different-config-error?
+  "DuckDB allows one instance per database file per process: opening the same file with
+   changed settings (e.g. read-only toggled on a database file) is refused while the old instance
+   has open connections."
+  [^Throwable e]
+  (boolean (some #(some-> (ex-message %) (str/includes? "with a different configuration"))
+                 (take-while some? (iterate #(.getCause ^Throwable %) e)))))
+
+(defn- database-ids-with-file
+  "Ids of saved DuckDB databases whose details point at `database-file`."
+  [database-file]
+  (let [select (requiring-resolve 'toucan2.core/select)]
+    (for [db (select :model/Database :engine "duckdb")
+          :when (= database-file (get-in db [:details :database_file]))]
+      (:id db))))
+
+(defmethod driver/can-connect? :duckdb
+  [driver details]
+  (try
+    (sql-jdbc.conn/can-connect? driver details)
+    (catch Throwable e
+      (let [db-ids (when (same-file-different-config-error? e)
+                     (seq (database-ids-with-file (:database_file details))))]
+        (when-not db-ids
+          (throw e))
+        ;; The user is saving changed details (e.g. read-only toggled) for a database file this
+        ;; process already holds open. Validation runs before the save, so without
+        ;; recycling the old pools here the new details could never be validated, let
+        ;; alone saved.
+        (log/warnf "Recycling connection pool(s) of database(s) %s to validate changed connection details; queries running at this moment will be interrupted"
+                   (str/join ", " db-ids))
+        (doseq [id db-ids]
+          (sql-jdbc.conn/invalidate-pool-for-db! id))
+        ;; c3p0 closes the evicted connections on helper threads, so the old instance can
+        ;; outlive invalidate-pool-for-db! by a moment; keep retrying while it does.
+        (loop [attempts-left 20]
+          (let [result (try
+                         (sql-jdbc.conn/can-connect? driver details)
+                         (catch Throwable retry-e
+                           (when-not (and (pos? attempts-left) (same-file-different-config-error? retry-e))
+                             (throw retry-e))
+                           ::old-instance-still-open))]
+            (if (= result ::old-instance-still-open)
+              (do (Thread/sleep 250)
+                  (recur (dec attempts-left)))
+              result)))))))
 
 (defmethod sql-jdbc.execute/do-with-connection-with-options :duckdb
   [driver db-or-id-or-spec {:keys [^String session-timezone report-timezone] :as options} f]
@@ -481,7 +536,9 @@
      (sql-jdbc.execute/do-with-connection-with-options
       driver database nil
       (fn [conn]
-        (let [cloned-conn (clone-raw-connection conn)]
+        ;; The clone is a raw connection outside the pool: left open it keeps the DuckDB instance alive, which
+        ;; then refuses to reopen with changed details (see can-connect?).
+        (with-open [^java.sql.Connection cloned-conn (clone-raw-connection conn)]
           ;; Cloned connections don't inherit attachments, so we must run init SQL on them too.
           ;; This is critical for DuckLake where the catalog attachment is session-scoped.
           (ensure-init-sql! cloned-conn init-sql)
@@ -550,24 +607,24 @@
      (sql-jdbc.execute/do-with-connection-with-options
       driver database nil
       (fn [conn]
-        (let [cloned-conn (clone-raw-connection conn)
-              ;; Cloned connections don't inherit attachments, so we must run init SQL on them too.
-              _ (ensure-init-sql! cloned-conn init-sql)
-              results (jdbc/query {:connection cloned-conn} [get_columns_query])
+        (with-open [^java.sql.Connection cloned-conn (clone-raw-connection conn)]
+          (let [;; Cloned connections don't inherit attachments, so we must run init SQL on them too.
+                _ (ensure-init-sql! cloned-conn init-sql)
+                results (jdbc/query {:connection cloned-conn} [get_columns_query])
+                info-schema-fields
+                (set
+                 (for [[idx {column_name :column_name, data_type :data_type, column_comment :column_comment}] (m/indexed results)
+                       :let [base-type (sql-jdbc.sync/database-type->base-type driver (keyword data_type))]
+                       :when (some? base-type)]
+                   {:name              column_name
+                    :database-type     data_type
+                    :base-type         base-type
+                    :database-position idx
+                    :field-comment     column_comment}))]
+            (if (seq info-schema-fields)
               info-schema-fields
-              (set
-               (for [[idx {column_name :column_name, data_type :data_type, column_comment :column_comment}] (m/indexed results)
-                     :let [base-type (sql-jdbc.sync/database-type->base-type driver (keyword data_type))]
-                     :when (some? base-type)]
-                 {:name              column_name
-                  :database-type     data_type
-                  :base-type         base-type
-                  :database-position idx
-                  :field-comment     column_comment}))]
-          (if (seq info-schema-fields)
-            info-schema-fields
-            (do
-              (log/infof "No columns found in information_schema for %s.%s, falling back to DESCRIBE"
-                         schema table_name)
-              (fields-from-describe driver cloned-conn schema table_name))))))}))
+              (do
+                (log/infof "No columns found in information_schema for %s.%s, falling back to DESCRIBE"
+                           schema table_name)
+                (fields-from-describe driver cloned-conn schema table_name)))))))}))
 
