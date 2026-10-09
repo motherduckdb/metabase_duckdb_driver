@@ -161,13 +161,20 @@
   "Creates a spec for `clojure.java.jdbc` to use for connecting to DuckDB via JDBC from the given `opts`"
   [{:keys [database_file, read_only, allow_unsigned_extensions, old_implicit_casting,
            motherduck_token, memory_limit, azure_transport_option_type, attach_mode], :as details}]
-  (let [[database_file_base database_file_additional_options] (database-file-path-split database_file)]
+  (let [[database_file_base database_file_additional_options] (database-file-path-split database_file)
+        motherduck? (boolean (re-find #"^md:" (or database_file "")))]
     (-> details
         remove-internal-connection-keys
         (merge
          {:classname         "org.duckdb.DuckDBDriver"
           :subprotocol       "duckdb"
-          :subname           (or database_file "")
+          ;; DuckDB caches one instance per path and refuses to reopen it with other settings while it lives, and the
+          ;; MotherDuck extension keeps it alive for 15 minutes after the last connection closes. A key that is unique
+          ;; per spec (so per pool) gives changed details a fresh instance right away instead of a conflict with the old
+          ;; one, which may still have connections open; the TTL of 0 then frees it as soon as its last one closes.
+          ;; MotherDuck ignores the unknown parameter. Same recipe as pgendpoint.
+          :subname           (cond-> (or database_file "")
+                               motherduck? (str (if (str/includes? database_file "?") "&" "?") "cache_bust=" (random-uuid)))
           "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
           "temp_directory"   (temp-directory database_file_base)
           "jdbc_stream_results" "true"}
@@ -181,11 +188,12 @@
            {"azure_transport_option_type" (str azure_transport_option_type)})
          (when allow_unsigned_extensions
            {"allow_unsigned_extensions" (str allow_unsigned_extensions)})
-         (when (seq (re-find #"^md:" database_file))
+         (when motherduck?
             ;; attach_mode option is not settable by the user, it's always single mode when
             ;; using motherduck, but in tests we need to be able to connect to motherduck in
             ;; workspace mode, so it's handled here.
-           {"motherduck_attach_mode"  (or attach_mode "single")})    ;; when connecting to MotherDuck, explicitly connect to a single database
+           {"motherduck_attach_mode"  (or attach_mode "single")    ;; when connecting to MotherDuck, explicitly connect to a single database
+            "motherduck_dbinstance_inactivity_ttl" "0s"})
          (when (seq motherduck_token)     ;; Only configure the option if token is provided
            {"motherduck_token" motherduck_token})
          (sql-jdbc.common/additional-options->map (:additional-options details) :url)
@@ -207,7 +215,7 @@
 
 (defn- same-file-different-config-error?
   "DuckDB allows one instance per database file per process: opening the same file with
-   changed settings (e.g. a rotated MotherDuck token) is refused while the old instance
+   changed settings (e.g. read-only toggled on a database file) is refused while the old instance
    has open connections."
   [^Throwable e]
   (boolean (some #(some-> (ex-message %) (str/includes? "with a different configuration"))
@@ -230,7 +238,7 @@
                      (seq (database-ids-with-file (:database_file details))))]
         (when-not db-ids
           (throw e))
-        ;; The user is saving changed details (e.g. a rotated token) for a database this
+        ;; The user is saving changed details (e.g. read-only toggled) for a database file this
         ;; process already holds open. Validation runs before the save, so without
         ;; recycling the old pools here the new details could never be validated, let
         ;; alone saved.
