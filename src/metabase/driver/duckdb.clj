@@ -169,12 +169,17 @@
         (merge
          {:classname         "org.duckdb.DuckDBDriver"
           :subprotocol       "duckdb"
-          ;; DuckDB caches one instance per path and refuses to reopen it with other settings while it lives, and the
-          ;; MotherDuck extension keeps it alive for 15 minutes after the last connection closes. A key derived from the
-          ;; details gives changed details a fresh instance right away instead of a conflict with the old one, which may
-          ;; still have connections open; the TTL of 0 then frees it as soon as its last one closes. The key must be
-          ;; deterministic: Metabase hashes this spec to decide whether the pool is stale, so a random value would
-          ;; invalidate the pool on every connection checkout.
+          ;; DuckDB keeps one instance per database path and fails with "Can't open a connection to same database file
+          ;; with a different configuration" if the path is opened again with other settings (a new token, say) while
+          ;; that instance is alive. The MotherDuck extension keeps the instance alive for 15 minutes after its last
+          ;; connection closes, so without a workaround users could not change a MotherDuck database's connection
+          ;; details: validating the new details would hit that error. To avoid it we append a `cache_bust` parameter to
+          ;; the path, so changed details get a different path and DuckDB opens a fresh instance instead of reusing the
+          ;; old one. The TTL of 0 frees each instance as soon as its last connection closes.
+          ;; Any value that differs between details would avoid the error, but a random one would break Metabase:
+          ;; it hashes this spec to decide whether the pool is stale, so the pool would be invalidated on every
+          ;; connection checkout, causing instances to churn all the time. Hence a hash of the details: stable
+          ;; while they are unchanged, different once they change.
           :subname           (cond-> (or database_file "")
                                motherduck? (str (if (str/includes? database_file "?") "&" "?")
                                                 (format "cache_bust=%08x" (hash (remove-internal-connection-keys details)))))
