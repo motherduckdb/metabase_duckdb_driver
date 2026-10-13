@@ -10,14 +10,15 @@
    [metabase.test :as mt]))
 
 (deftest motherduck-spec-gets-its-own-instance-test
-  (testing "each MotherDuck spec carries a unique cache key and no instance TTL, so changed details open a fresh
-           instance instead of colliding with the cached one the extension would otherwise keep for 15 minutes"
-    (let [spec #(sql-jdbc.conn/connection-details->spec :duckdb {:database_file "md:my_db"})
-          a    (spec)
-          b    (spec)]
-      (is (re-find #"^md:my_db\?cache_bust=[0-9a-f-]{36}$" (:subname a)))
-      (is (not= (:subname a) (:subname b)))
-      (is (= "0s" (get a "motherduck_dbinstance_inactivity_ttl")))))
+  (testing "a MotherDuck spec's cache key is stable for the same details, so Metabase's spec hash does not invalidate
+           the pool on every checkout, and changes with the details, so changed details open a fresh instance"
+    (let [spec #(sql-jdbc.conn/connection-details->spec :duckdb %)
+          a    (spec {:database_file "md:my_db" :motherduck_token-value "one"})
+          same (spec {:database_file "md:my_db" :motherduck_token-value "one"})
+          diff (spec {:database_file "md:my_db" :motherduck_token-value "two"})]
+      (is (= (:subname a) (:subname same)))
+      (is (= (hash a) (hash same)))
+      (is (not= (:subname a) (:subname diff)))))
   (testing "options already on the path are kept"
     (is (re-find #"^md:my_db\?read_only=true&cache_bust="
                  (:subname (sql-jdbc.conn/connection-details->spec :duckdb {:database_file "md:my_db?read_only=true"})))))

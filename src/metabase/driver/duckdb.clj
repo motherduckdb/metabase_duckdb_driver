@@ -169,12 +169,14 @@
          {:classname         "org.duckdb.DuckDBDriver"
           :subprotocol       "duckdb"
           ;; DuckDB caches one instance per path and refuses to reopen it with other settings while it lives, and the
-          ;; MotherDuck extension keeps it alive for 15 minutes after the last connection closes. A key that is unique
-          ;; per spec (so per pool) gives changed details a fresh instance right away instead of a conflict with the old
-          ;; one, which may still have connections open; the TTL of 0 then frees it as soon as its last one closes.
-          ;; MotherDuck ignores the unknown parameter. Same recipe as pgendpoint.
+          ;; MotherDuck extension keeps it alive for 15 minutes after the last connection closes. A key derived from the
+          ;; details gives changed details a fresh instance right away instead of a conflict with the old one, which may
+          ;; still have connections open; the TTL of 0 then frees it as soon as its last one closes. The key must be
+          ;; deterministic: Metabase hashes this spec to decide whether the pool is stale, so a random value would
+          ;; invalidate the pool on every connection checkout.
           :subname           (cond-> (or database_file "")
-                               motherduck? (str (if (str/includes? database_file "?") "&" "?") "cache_bust=" (random-uuid)))
+                               motherduck? (str (if (str/includes? database_file "?") "&" "?")
+                                                (format "cache_bust=%08x" (hash (remove-internal-connection-keys details)))))
           "custom_user_agent" (str "metabase" (if (is-hosted?) " metabase-cloud" ""))
           "temp_directory"   (temp-directory database_file_base)
           "jdbc_stream_results" "true"}
