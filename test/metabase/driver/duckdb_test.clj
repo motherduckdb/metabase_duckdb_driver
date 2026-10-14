@@ -1,10 +1,49 @@
 (ns metabase.driver.duckdb-test
   (:require
+   [clojure.java.jdbc :as jdbc]
    [clojure.string :as str]
    [clojure.test :refer [are deftest is testing]]
+   [metabase.driver :as driver]
    [metabase.driver.duckdb]
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
-   [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]))
+   [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
+   [metabase.test :as mt]))
+
+(deftest motherduck-spec-gets-its-own-instance-test
+  (testing "a MotherDuck spec's cache key is stable for the same details, so Metabase's spec hash does not invalidate
+           the pool on every checkout, and changes with the details, so changed details open a fresh instance"
+    (let [spec #(sql-jdbc.conn/connection-details->spec :duckdb %)
+          a    (spec {:database_file "md:my_db" :motherduck_token-value "one"})
+          same (spec {:database_file "md:my_db" :motherduck_token-value "one"})
+          diff (spec {:database_file "md:my_db" :motherduck_token-value "two"})]
+      (is (= (:subname a) (:subname same)))
+      (is (= (hash a) (hash same)))
+      (is (not= (:subname a) (:subname diff)))))
+  (testing "options already on the path are kept"
+    (is (re-find #"^md:my_db\?read_only=true&cache_bust="
+                 (:subname (sql-jdbc.conn/connection-details->spec :duckdb {:database_file "md:my_db?read_only=true"})))))
+  (testing "local files are keyed by their path and get neither"
+    (let [spec (sql-jdbc.conn/connection-details->spec :duckdb {:database_file "/data/warehouse.db"})]
+      (is (= "/data/warehouse.db" (:subname spec)))
+      (is (nil? (get spec "motherduck_dbinstance_inactivity_ttl"))))))
+
+(deftest can-connect-recycles-conflicting-pool-test
+  (testing "validating changed details recycles the live pool instead of failing (token rotation flow):
+           DuckDB refuses to open the same file with a different configuration while the old
+           instance has open connections, which used to fail validation and so block the save"
+    (let [file (str (System/getProperty "java.io.tmpdir") "/pool-recycle-" (System/currentTimeMillis) ".db")]
+      (mt/with-temp [:model/Database db {:engine :duckdb, :details {:database_file file}}]
+        (try
+          ;; open a pooled connection the way a running Metabase holds one, then sync: describe-database and
+          ;; describe-table clone raw connections outside the pool, which used to leak and keep the instance alive
+          (jdbc/execute! (sql-jdbc.conn/db->pooled-connection-spec db) ["CREATE TABLE t (i INTEGER)"])
+          (driver/describe-database :duckdb db)
+          (driver/describe-table :duckdb db {:name "t", :schema "main"})
+          ;; same file, different config: without recycling this throws
+          ;; "Can't open a connection to same database file with a different configuration"
+          (is (true? (driver/can-connect? :duckdb {:database_file file, :read_only true})))
+          (finally
+            (sql-jdbc.conn/invalidate-pool-for-db! db)))))))
 
 (defn- temp-dir-for [database-file]
   (get (sql-jdbc.conn/connection-details->spec :duckdb {:database_file database-file})
