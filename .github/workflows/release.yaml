@@ -1,0 +1,197 @@
+name: Release
+
+# Cutting a release: pick a main commit with a green build and give it a
+# version. Its jar is smoke-tested against every Metabase version in
+# metabase_versions.json before anything is published.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit on main to release (defaults to the latest)
+        default: main
+      version:
+        description: Driver version, e.g. 1.5.6.0, or 1.5.6.1 for a driver-only fix
+        required: true
+      dry_run:
+        description: Run all checks and smoke tests, but publish nothing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  VERSION: ${{ inputs.version }}
+  # Derived rather than hardcoded so a fork pushes to its own namespace with no
+  # edits to revert before opening a PR.
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/metabase-duckdb
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.build.outputs.sha }}
+      run_id: ${{ steps.build.outputs.run_id }}
+      metabase_versions: ${{ steps.version.outputs.metabase_versions }}
+      primary: ${{ steps.version.outputs.primary }}
+      title: ${{ steps.version.outputs.title }}
+    steps:
+      # A successful push run on main proves the commit is on main and its jar built.
+      - name: Find the green main build
+        id: build
+        env:
+          REF: ${{ inputs.sha }}
+        run: |
+          sha=$(gh api "repos/$GH_REPO/commits/$REF" -q .sha)
+          run_id=$(gh run list --workflow build_metabase_duckdb_driver.yaml --branch main --event push --commit "$sha" \
+            --status success --json databaseId -q '.[0].databaseId')
+          [ -n "$run_id" ] || { echo "::error::No successful main build for $sha"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.build.outputs.sha }}
+
+      # The first three numbers are the bundled DuckDB version, the fourth counts
+      # driver releases on it. Tags are the bare version, which the download URLs
+      # in the Dockerfile, Makefile and README expect.
+      - name: Validate version
+        id: version
+        run: |
+          [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.[0-9]+$ ]] \
+            || { echo "::error::Invalid version '$VERSION', expected e.g. 1.5.6.0"; exit 1; }
+          duckdb=${BASH_REMATCH[1]}
+          jdbc=$(sed -n 's/.*duckdb_jdbc {:mvn\/version "\([^"]*\)".*/\1/p' deps.edn)
+          [[ "$jdbc" == "$duckdb".* ]] \
+            || { echo "::error::Version $VERSION does not match duckdb_jdbc $jdbc in deps.edn"; exit 1; }
+          if gh api "repos/$GH_REPO/git/ref/tags/$VERSION" --silent 2>/dev/null; then
+            echo "::error::Tag $VERSION already exists"; exit 1
+          fi
+          primary=$(jq -r 'sort_by(split(".") | map(tonumber)) | last' metabase_versions.json)
+          {
+            echo "metabase_versions=$(jq -c . metabase_versions.json)"
+            echo "primary=$primary"
+            echo "title=Metabase $(cut -d. -f2 <<< "$primary") + DuckDB $duckdb"
+          } >> "$GITHUB_OUTPUT"
+
+  # Metabase loads the driver lazily, so the smoke test adds a DuckDB database and
+  # runs a query. amd64 only: buildx cannot load a multi-platform image, and arm64
+  # under emulation boots Metabase far too slowly.
+  smoke-test:
+    needs: prepare
+    name: smoke (${{ matrix.metabase_version }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        metabase_version: ${{ fromJSON(needs.prepare.outputs.metabase_versions) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - name: Download the jar from the green build
+        run: gh run download "${{ needs.prepare.outputs.run_id }}" -n metabase-duckdb-driver -D dist
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Cached so publish-images pushes the amd64 image tested here, not a rebuild.
+      - name: Build amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: metabase-duckdb:smoke
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.metabase_version }}
+          build-args: |
+            METABASE_VERSION=${{ matrix.metabase_version }}
+            DUCKDB_DRIVER_URL=dist/duckdb.metabase-driver.jar
+
+      - name: Smoke test
+        run: python3 ci/smoke_image.py metabase-duckdb:smoke
+
+  release:
+    needs: [prepare, smoke-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      SHA: ${{ needs.prepare.outputs.sha }}
+      TITLE: ${{ needs.prepare.outputs.title }}
+    steps:
+      - name: Download the jar from the green build
+        run: gh run download "${{ needs.prepare.outputs.run_id }}" -n metabase-duckdb-driver
+
+      # With assets, gh publishes only after they're uploaded and deletes the draft if uploading fails.
+      - name: Create release
+        run: |
+          ${{ inputs.dry_run && 'echo [dry run]' || '' }} gh release create "$VERSION" duckdb.metabase-driver.jar \
+            --target "$SHA" --title "$TITLE" --generate-notes
+
+  # After the release, so an image never names a driver version that was not
+  # published. If a push fails, build_container_images.yaml backfills it from
+  # the release.
+  publish-images:
+    needs: [prepare, release]
+    if: ${{ !inputs.dry_run }}
+    name: image (${{ matrix.metabase_version }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        metabase_version: ${{ fromJSON(needs.prepare.outputs.metabase_versions) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - name: Download the jar from the green build
+        run: gh run download "${{ needs.prepare.outputs.run_id }}" -n metabase-duckdb-driver -D dist
+
+      # :latest goes to the newest listed Metabase version.
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ matrix.metabase_version }}-duckdb${{ inputs.version }}
+            type=raw,value=latest,enable=${{ matrix.metabase_version == needs.prepare.outputs.primary }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=release-${{ matrix.metabase_version }}
+          build-args: |
+            METABASE_VERSION=${{ matrix.metabase_version }}
+            DUCKDB_DRIVER_URL=dist/duckdb.metabase-driver.jar

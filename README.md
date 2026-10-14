@@ -288,15 +288,14 @@ docker build . --tag metabase_duckdb:latest \
 Which Metabase versions the driver supports is recorded in
 [metabase_versions.json](./metabase_versions.json), a plain list of versions.
 
-Images are built by the same workflow that builds the driver
-(`build_metabase_duckdb_driver.yaml`), always from the jar produced in that
-run, never from a release download:
+Images are always built from a jar produced by CI, never from a release
+download:
 
 - Pull requests push `pr-<number>` (PRs from forks build without pushing).
 - Pushes to `main` push `main` and `sha-<short-sha>`.
-- Publishing a release attaches the jar to the release and pushes one image per
-  listed Metabase version, tagged `<metabase_version>-duckdb<driver_version>`,
-  with `:latest` going to the newest listed Metabase version.
+- The **Release** workflow pushes one image per listed Metabase version, tagged
+  `<metabase_version>-duckdb<driver_version>`, with `:latest` going to the
+  newest listed Metabase version.
 
 **Build Container Images** is a manual backfill tool for combining an
 already-published driver release with another Metabase version (e.g. a new
@@ -313,8 +312,16 @@ GitHub release and takes these inputs:
 
 #### Releasing a new driver version
 
-1. In one PR: bump `org.duckdb/duckdb_jdbc` in [deps.edn](./deps.edn) (this *is* the driver version), and [metabase_versions.json](./metabase_versions.json) if the supported range changed. The Dockerfile defaults to the newest listed Metabase version and the newest driver release, so it needs no edits. Merge to `main`.
-2. Publish the release, tagged with the bare new driver version (e.g. `1.5.5.0`), pointing at a commit that contains the updated `metabase_versions.json`. The workflow rejects a tag that does not match the driver version in `deps.edn`. The release run then builds the jar from the tagged commit, attaches it to the release, and pushes the images.
+Don't create releases or tags from the GitHub UI. Merge any version bumps first: `org.duckdb/duckdb_jdbc` in [deps.edn](./deps.edn), and [metabase_versions.json](./metabase_versions.json) if the supported range changed. The Dockerfile defaults to the newest listed Metabase version and the newest driver release, so it needs no edits.
+
+Then run the **Release** workflow with the following parameters:
+- `sha`: a `main` commit whose `Build Metabase DuckDB Driver` run is green (defaults to the latest).
+- `version`: the first three numbers must match `duckdb_jdbc` in `deps.edn`, and the fourth counts driver releases on that DuckDB version (`1.5.6.0`, then `1.5.6.1` for a driver-only fix).
+- `dry_run`: run every check and smoke test, then only print the release command.
+
+The workflow fails if the tag already exists, the version does not match `deps.edn`, or the commit has no green `main` build. Otherwise it takes the jar from that build and smoke-tests it in an image for every version in `metabase_versions.json`. It then creates the tag `<version>` on the commit and publishes the release, titled `Metabase <newest listed> + DuckDB <x.y.z>`, with the jar attached and generated notes. `gh release create` publishes only after the jar is uploaded, so no release goes out without it. The images are pushed last; if a push fails, backfill it with **Build Container Images**.
+
+The integration tests run with `continue-on-error`, so a green build does not mean they passed. Check their logs before releasing.
 
 Both the target registry and the driver download URL are derived from the repository the workflow runs in, so the whole pipeline can be exercised on a fork without editing anything.
 

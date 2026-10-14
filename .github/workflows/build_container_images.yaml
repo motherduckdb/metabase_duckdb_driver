@@ -3,9 +3,10 @@ name: Build Container Images
 on:
   # Manual backfill tool: build one image combining an already-published driver
   # release with another Metabase version (e.g. a new Metabase release for an
-  # existing driver). The regular pipeline in build_metabase_duckdb_driver.yaml
-  # bakes the jar it just built into its images; this workflow instead pulls
-  # the driver jar from its GitHub release, so that release must already exist.
+  # existing driver, or an image push that failed in release.yaml). release.yaml
+  # bakes the jar from the released commit's build into its images; this
+  # workflow instead pulls the driver jar from its GitHub release, so that
+  # release must already exist.
   workflow_dispatch:
     inputs:
       metabase_version:
