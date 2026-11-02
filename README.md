@@ -96,6 +96,102 @@ ATTACH IF NOT EXISTS 'ducklake:postgres:dbname=catalog user=me password=secret h
 USE my_lake;
 ```
 
+## Quack (remote DuckDB server)
+
+Starting from driver version 1.5.2.0, Metabase can query another DuckDB
+instance over the [Quack remote protocol](https://duckdb.org/docs/stable/quack/overview.html).
+The `quack` extension in DuckDB's core repository carries the server
+(`quack_serve`) and the client from DuckDB 1.5.2 on; the driver version is the
+bundled DuckDB version plus a patch digit, so `1.5.2.0` is the first release
+with it. Verified with driver 1.5.6.0 against a DuckDB 1.5.5 server. DuckDB 2.0
+ships a reworked protocol and a `CONNECT` statement; neither exists in the
+1.5.x the driver bundles.
+
+On the serving side, start the server from any DuckDB session. It prints the
+listen URL and the token:
+
+```sql
+CALL quack_serve('quack:localhost', token = 'MY_QUACK_TOKEN');
+```
+
+### As the database file
+
+Put the server URI in the **Database file** field, like `md:` or `ducklake:`:
+
+```
+quack:server.example.com:9494
+```
+
+The server is then the current database, so tables need no prefix. Two things
+have to be in place before the connection opens, because nothing can run SQL
+earlier than that. Do both once, from the SQL editor of any other DuckDB data
+source in the same Metabase; they land in the DuckDB home directory, which
+every data source shares:
+
+```sql
+INSTALL quack;
+CREATE PERSISTENT SECRET quack_prod (TYPE quack, TOKEN 'MY_QUACK_TOKEN', SCOPE 'quack:server.example.com:9494');
+```
+
+Opening a `quack:` database does not autoinstall the extension (the connection
+test fails with `Extension "quack" not found ... Install it first`), and the
+secret is how the token reaches a connection that has no `ATTACH` to carry it.
+Under Docker both live in `/home/metabase/.duckdb/`, so mount it or repeat the
+two statements after recreating the container.
+
+### Through Init SQL
+
+Alternatively keep the data source on a real database file (not `:memory:`,
+see below) and attach the server in the **Init SQL** field:
+
+```sql
+INSTALL quack; LOAD quack;
+ATTACH IF NOT EXISTS 'quack:server.example.com' AS remote (TOKEN 'MY_QUACK_TOKEN');
+SET search_path='remote.main,main';
+```
+
+This form keeps the token in the data source and is the only one with a
+`DISABLE_SSL` switch (see below). The `INSTALL`/`LOAD` lines are not strictly
+required here, DuckDB autoinstalls the extension on the first `ATTACH`, but
+keep them: Metabase opens several connections at once when a data source is
+created, and on a fresh install with the bare `ATTACH` the first query came
+back with *table does not exist* while later ones worked; with the explicit
+statements it worked first time.
+
+Things to know:
+
+- **The data browser stays empty.** DuckDB 1.5.x lists nothing for a quack
+  catalog in `duckdb_tables()` or `information_schema`, whichever way it is
+  attached, so a sync finds no tables. Query it from the SQL editor.
+  `remote.query('<sql>')` runs a statement on the server as is, which also
+  lists what is there:
+
+  ```sql
+  FROM remote.query('FROM duckdb_tables() WHERE NOT internal');
+  ```
+- **Plain HTTP needs `DISABLE_SSL true`.** The client uses HTTP for
+  `localhost`, `127.0.0.1` and `::1` and HTTPS for every other host. A server
+  started with `disable_ssl = true`, or reached under another name, fails with
+  `SSL connect error for HTTP POST to 'https://...'` until the attach says
+  `(TOKEN '...', DISABLE_SSL true)`. Only `ATTACH` takes that option, so such a
+  server has to go through Init SQL.
+- **Use the single-colon URI in `ATTACH`.** Only `quack:host[:port]` reaches
+  the extension. `quack://host`, `quack+http:` or a `?key=value` suffix is taken
+  for a file path, and `ATTACH` silently creates a new DuckDB file of that name
+  in Metabase's working directory.
+- **Docker Desktop cannot reach `quack:localhost` on the host.** That binds
+  `[::1]` only, while `host.docker.internal` forwards to the host's IPv4
+  loopback and `--network host` is the VM's loopback, not the machine's. Serve
+  on IPv4 and attach through the gateway name, which needs the Init SQL form
+  for `DISABLE_SSL`:
+
+  ```sql
+  -- on the host
+  CALL quack_serve('quack:127.0.0.1:9494', token = 'MY_QUACK_TOKEN', disable_ssl = true);
+  -- Init SQL in Metabase
+  ATTACH IF NOT EXISTS 'quack:host.docker.internal:9494' AS remote (TOKEN 'MY_QUACK_TOKEN', DISABLE_SSL true);
+  ```
+
 ## Init SQL
 
 The **Init SQL** connection field runs on every new DuckDB connection Metabase
