@@ -7,7 +7,9 @@
    [metabase.driver.duckdb]
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
    [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
-   [metabase.test :as mt]))
+   [metabase.driver.sql.query-processor :as sql.qp]
+   [metabase.test :as mt]
+   [metabase.util.honey-sql-2 :as h2x]))
 
 (deftest motherduck-spec-gets-its-own-instance-test
   (testing "a MotherDuck spec's cache key is stable for the same details, so Metabase's spec hash does not invalidate
@@ -44,6 +46,42 @@
           (is (true? (driver/can-connect? :duckdb {:database_file file, :read_only true})))
           (finally
             (sql-jdbc.conn/invalidate-pool-for-db! db)))))))
+
+(deftest describe-quack-catalog-test
+  (testing "tables and columns of an attached quack catalog are fetched from the server, since DuckDB lists
+           nothing for it in information_schema"
+    (let [stamp  (System/currentTimeMillis)
+          tmpdir (System/getProperty "java.io.tmpdir")
+          server (str tmpdir "/quack-server-" stamp ".db")
+          client (str tmpdir "/quack-client-" stamp ".db")]
+      ;; the server runs inside this connection's DuckDB instance for as long as the connection stays open
+      (with-open [conn (java.sql.DriverManager/getConnection (str "jdbc:duckdb:" server))]
+        (jdbc/execute! {:connection conn} ["INSTALL quack; LOAD quack; CREATE TABLE events (id INTEGER, name VARCHAR)"])
+        (jdbc/query {:connection conn} ["FROM quack_serve('quack:localhost:19494', token := 'test-token')"])
+        (mt/with-temp [:model/Database db {:engine  :duckdb
+                                           :details {:database_file client
+                                                     :init_sql      (str "INSTALL quack; LOAD quack; "
+                                                                         "ATTACH IF NOT EXISTS 'quack:localhost:19494' "
+                                                                         "AS remote (TOKEN 'test-token');")}}]
+          (try
+            (is (contains? (:tables (driver/describe-database :duckdb db))
+                           {:name "events", :schema "quack:remote", :description nil}))
+            (is (= [{:name "id", :database-type "INTEGER", :base-type :type/Integer}
+                    {:name "name", :database-type "VARCHAR", :base-type :type/Text}]
+                   (->> (driver/describe-table :duckdb db {:name "events", :schema "quack:remote"})
+                        :fields
+                        (sort-by :database-position)
+                        (map #(select-keys % [:name :database-type :base-type])))))
+            (finally
+              (sql-jdbc.conn/invalidate-pool-for-db! db))))))))
+
+(deftest ^:parallel quack-identifier-test
+  (testing "a table synced from a quack catalog is addressed as catalog.table and its columns stay unqualified,
+           because a quack catalog binds only the bare table name"
+    (are [identifier expected] (= expected (sql.qp/->honeysql :duckdb identifier))
+      (h2x/identifier :table "quack:remote" "events")      (h2x/identifier :table "remote" "events")
+      (h2x/identifier :field "quack:remote" "events" "id") (h2x/identifier :field "events" "id")
+      (h2x/identifier :field "main" "events" "id")         (h2x/identifier :field "main" "events" "id"))))
 
 (defn- temp-dir-for [database-file]
   (get (sql-jdbc.conn/connection-details->spec :duckdb {:database_file database-file})

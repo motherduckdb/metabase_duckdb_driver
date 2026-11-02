@@ -96,6 +96,132 @@ ATTACH IF NOT EXISTS 'ducklake:postgres:dbname=catalog user=me password=secret h
 USE my_lake;
 ```
 
+## Quack (remote DuckDB server)
+
+Starting from driver version 1.5.2.0, Metabase can query another DuckDB
+instance over the [Quack remote protocol](https://duckdb.org/docs/stable/quack/overview.html).
+The `quack` extension in DuckDB's core repository carries the server
+(`quack_serve`) and the client from DuckDB 1.5.2 on; the driver version is the
+bundled DuckDB version plus a patch digit, so `1.5.2.0` is the first release
+with it. Verified with driver 1.5.6.0 against a DuckDB 1.5.5 server. DuckDB 2.0
+ships a reworked protocol and a `CONNECT` statement; neither exists in the
+1.5.x the driver bundles.
+
+On the serving side, start the server from any DuckDB session. It prints the
+listen URL and the token:
+
+```sql
+CALL quack_serve('quack:localhost', token = 'MY_QUACK_TOKEN');
+```
+
+In Metabase, put the server URI in the **Database file** field, like `md:` or
+`ducklake:`:
+
+```
+quack:server.example.com:9494
+```
+
+The server is then the current database. Two things have to be in place before
+the connection opens, because nothing can run SQL earlier than that: the
+extension, since opening a `quack:` database does not autoinstall it (the
+connection test fails with `Extension "quack" not found ... Install it first`),
+and a persistent quack secret holding the token, which is how the token reaches
+a connection that has no `ATTACH` to carry it. Both live in the DuckDB home
+directory, which every data source of a Metabase shares.
+
+Under Docker, seed them at startup. The image has no DuckDB CLI, but
+`metabase.jar` carries `clojure.main` and the driver jar carries `duckdb_jdbc`,
+so an entrypoint script can run the driver's own DuckDB (same version, same
+home directory) before Metabase starts:
+
+```sh
+#!/bin/sh
+set -e
+if [ -n "$QUACK_TOKEN" ]; then
+  token=$(printf %s "$QUACK_TOKEN" | sed "s/'/''/g")
+  scope=""
+  if [ -n "$QUACK_URI" ]; then scope=", SCOPE '$QUACK_URI'"; fi
+  java -cp /home/metabase/metabase.jar:/home/metabase/plugins/duckdb.metabase-driver.jar clojure.main -e "
+    (Class/forName \"org.duckdb.DuckDBDriver\")
+    (with-open [c (java.sql.DriverManager/getConnection \"jdbc:duckdb:\")]
+      (.execute (.createStatement c)
+        \"INSTALL quack; CREATE OR REPLACE PERSISTENT SECRET quack_env (TYPE quack, TOKEN '$token'$scope);\"))"
+fi
+exec java -jar /home/metabase/metabase.jar
+```
+
+```bash
+docker run -d -p 3000:3000 \
+  -e QUACK_TOKEN=MY_QUACK_TOKEN -e QUACK_URI=quack:server.example.com:9494 \
+  -v "$PWD/entrypoint.sh:/entrypoint.sh:ro" --entrypoint /entrypoint.sh \
+  ghcr.io/motherduckdb/metabase-duckdb:latest
+```
+
+The seeding adds a few seconds to startup. The same hook serves any other
+one-time setup, such as pre-installing extensions or storing other persistent
+secrets. Outside Docker, run the two statements once from the SQL editor of
+any other DuckDB data source in the same Metabase:
+
+```sql
+INSTALL quack;
+CREATE PERSISTENT SECRET quack_prod (TYPE quack, TOKEN 'MY_QUACK_TOKEN', SCOPE 'quack:server.example.com:9494');
+```
+
+Things to know:
+
+- **Sync asks the server for its catalog.** DuckDB 1.5.x lists nothing for a
+  quack catalog in `duckdb_tables()` or `information_schema`, so on releases
+  up to 1.5.6.0 the data browser stays empty and only the SQL editor works.
+  Newer releases fetch the tables and columns of the server's default schema
+  through the catalog's `query` macro. They appear under a schema named
+  `quack:<catalog>`, and the compiler turns that into
+  `FROM "<catalog>"."<table>"` with unqualified column references, because a
+  quack catalog binds only the bare table name. Tables in other schemas on the
+  server stay reachable from the SQL editor only, and a query that scans two
+  quack tables at once (a self-join, say) fails on the server with *Multiple
+  streaming scans ... not currently supported*. The macro also runs any
+  statement of yours on the server:
+
+  ```sql
+  FROM "server.example.com:9494".query('FROM duckdb_tables() WHERE NOT internal');
+  ```
+- **A remote server needs TLS in front of it.** The client uses plain HTTP
+  for `localhost`, `127.0.0.1` and `::1`, HTTPS for every other host, and it
+  verifies the certificate. The 1.5.x server itself only speaks HTTP:
+  `quack_serve` has no certificate options and its `disable_ssl` flag changes
+  nothing on the listening side, so a server reached under any other name fails
+  with `SSL connect error for HTTP POST to 'https://...'`. Bind the server to
+  the loopback and put a TLS-terminating reverse proxy in front, as the DuckDB
+  docs recommend. A publicly trusted certificate needs nothing more; for a
+  private CA, hand the client the CA file through the Database file field:
+
+  ```
+  quack:server.example.com:9494?ca_cert_file=/certs/ca.pem
+  ```
+
+  (`quack:localhost` on the host is out of reach for Docker Desktop: it binds
+  `[::1]`, while `host.docker.internal` forwards to the host's IPv4 loopback and
+  `--network host` is the VM's loopback.)
+- **Use the single-colon URI.** Only `quack:host[:port]` reaches the
+  extension; `quack://host` is taken for a file path.
+
+### Attaching from Init SQL instead
+
+The server can also be attached in the **Init SQL** field of a data source
+that points at an ordinary database file, which is the only place with a
+`DISABLE_SSL` switch:
+
+```sql
+INSTALL quack; LOAD quack;
+ATTACH IF NOT EXISTS 'quack:host.docker.internal:9494' AS remote (TOKEN 'MY_QUACK_TOKEN', DISABLE_SSL true);
+```
+
+We do not recommend it. Init SQL is an ordinary text field: Metabase shows it
+unmasked to every admin and returns it verbatim from the API, unlike the token
+fields it treats as secrets, and like all connection details it is encrypted at
+rest only when `MB_ENCRYPTION_SECRET_KEY` is set. A token does not belong
+there. Keep this to local development, such as a server on the Docker host.
+
 ## Init SQL
 
 The **Init SQL** connection field runs on every new DuckDB connection Metabase
