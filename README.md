@@ -185,14 +185,23 @@ Things to know:
   ```sql
   FROM "server.example.com:9494".query('FROM duckdb_tables() WHERE NOT internal');
   ```
-- **A remote server has to serve HTTPS.** The client uses plain HTTP for
-  `localhost`, `127.0.0.1` and `::1` and HTTPS for every other host, and this
-  form has no switch for it. A server bound to a local address speaks HTTP only,
-  so reaching one from another machine, or from Docker Desktop through
-  `host.docker.internal`, fails with `SSL connect error for HTTP POST to
-  'https://...'`. (`quack:localhost` on the host is out of reach for Docker
-  Desktop anyway: it binds `[::1]`, while `host.docker.internal` forwards to the
-  host's IPv4 loopback and `--network host` is the VM's loopback.)
+- **A remote server needs TLS in front of it.** The client uses plain HTTP
+  for `localhost`, `127.0.0.1` and `::1`, HTTPS for every other host, and it
+  verifies the certificate. The 1.5.x server itself only speaks HTTP:
+  `quack_serve` has no certificate options and its `disable_ssl` flag changes
+  nothing on the listening side, so a server reached under any other name fails
+  with `SSL connect error for HTTP POST to 'https://...'`. Bind the server to
+  the loopback and put a TLS-terminating reverse proxy in front, as the DuckDB
+  docs recommend. A publicly trusted certificate needs nothing more; for a
+  private CA, hand the client the CA file through the Database file field:
+
+  ```
+  quack:server.example.com:9494?ca_cert_file=/certs/ca.pem
+  ```
+
+  (`quack:localhost` on the host is out of reach for Docker Desktop: it binds
+  `[::1]`, while `host.docker.internal` forwards to the host's IPv4 loopback and
+  `--network host` is the VM's loopback.)
 - **Use the single-colon URI.** Only `quack:host[:port]` reaches the
   extension; `quack://host` is taken for a file path.
 
