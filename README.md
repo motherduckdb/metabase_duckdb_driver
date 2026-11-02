@@ -199,9 +199,16 @@ Things to know:
   quack:server.example.com:9494?ca_cert_file=/certs/ca.pem
   ```
 
-  (`quack:localhost` on the host is out of reach for Docker Desktop: it binds
-  `[::1]`, while `host.docker.internal` forwards to the host's IPv4 loopback and
-  `--network host` is the VM's loopback.)
+  For a server on the Docker Desktop host, skip TLS by making it `localhost`
+  inside the container: run a forwarder in the container's network namespace
+  and use `quack:localhost:9494` as the Database file. The host server must
+  listen on `127.0.0.1` (`quack:localhost` binds `[::1]` only, which
+  `host.docker.internal` does not reach):
+
+  ```bash
+  docker run -d --name quack_fwd --network container:metabase_duckdb \
+    alpine/socat TCP-LISTEN:9494,fork,reuseaddr TCP:host.docker.internal:9494
+  ```
 - **Use the single-colon URI.** Only `quack:host[:port]` reaches the
   extension; `quack://host` is taken for a file path.
 
@@ -220,7 +227,8 @@ We do not recommend it. Init SQL is an ordinary text field: Metabase shows it
 unmasked to every admin and returns it verbatim from the API, unlike the token
 fields it treats as secrets, and like all connection details it is encrypted at
 rest only when `MB_ENCRYPTION_SECRET_KEY` is set. A token does not belong
-there. Keep this to local development, such as a server on the Docker host.
+there. A server on the Docker Desktop host does not need it either, see the
+forwarder above.
 
 ## Init SQL
 
