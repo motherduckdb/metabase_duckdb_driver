@@ -136,8 +136,39 @@ CREATE PERSISTENT SECRET quack_prod (TYPE quack, TOKEN 'MY_QUACK_TOKEN', SCOPE '
 Opening a `quack:` database does not autoinstall the extension (the connection
 test fails with `Extension "quack" not found ... Install it first`), and the
 secret is how the token reaches a connection that has no `ATTACH` to carry it.
-Under Docker both live in `/home/metabase/.duckdb/`, so mount it or repeat the
-two statements after recreating the container.
+
+Under Docker both land in `/home/metabase/.duckdb/` inside the container, so
+seed them at startup instead. The image has no DuckDB CLI, but `metabase.jar`
+carries `clojure.main` and the driver jar carries `duckdb_jdbc`, so an
+entrypoint script can run the driver's own DuckDB (same version, same home
+directory) before Metabase starts:
+
+```sh
+#!/bin/sh
+set -e
+if [ -n "$QUACK_TOKEN" ]; then
+  token=$(printf %s "$QUACK_TOKEN" | sed "s/'/''/g")
+  scope=""
+  if [ -n "$QUACK_URI" ]; then scope=", SCOPE '$QUACK_URI'"; fi
+  java -cp /home/metabase/metabase.jar:/home/metabase/plugins/duckdb.metabase-driver.jar clojure.main -e "
+    (Class/forName \"org.duckdb.DuckDBDriver\")
+    (with-open [c (java.sql.DriverManager/getConnection \"jdbc:duckdb:\")]
+      (.execute (.createStatement c)
+        \"INSTALL quack; CREATE OR REPLACE PERSISTENT SECRET quack_env (TYPE quack, TOKEN '$token'$scope);\"))"
+fi
+exec java -jar /home/metabase/metabase.jar
+```
+
+```bash
+docker run -d -p 3000:3000 \
+  -e QUACK_TOKEN=MY_QUACK_TOKEN -e QUACK_URI=quack:server.example.com:9494 \
+  -v "$PWD/entrypoint.sh:/entrypoint.sh:ro" --entrypoint /entrypoint.sh \
+  ghcr.io/motherduckdb/metabase-duckdb:latest
+```
+
+The seeding adds a few seconds to startup. The same hook serves any other
+one-time setup, such as pre-installing extensions or storing other persistent
+secrets.
 
 ### Through Init SQL
 
