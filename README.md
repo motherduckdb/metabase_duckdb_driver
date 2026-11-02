@@ -191,11 +191,18 @@ statements it worked first time.
 
 Things to know:
 
-- **The data browser stays empty.** DuckDB 1.5.x lists nothing for a quack
-  catalog in `duckdb_tables()` or `information_schema`, whichever way it is
-  attached, so a sync finds no tables. Query it from the SQL editor.
-  `remote.query('<sql>')` runs a statement on the server as is, which also
-  lists what is there:
+- **Sync asks the server for its catalog.** DuckDB 1.5.x lists nothing for a
+  quack catalog in `duckdb_tables()` or `information_schema`, whichever way it
+  is attached, so on releases up to 1.5.6.0 the data browser stays empty and
+  only the SQL editor works. Newer releases fetch the tables and columns of the
+  server's default schema through the catalog's `query` macro. They appear
+  under a schema named `quack:<catalog>`, and the compiler turns that into
+  `FROM "<catalog>"."<table>"` with unqualified column references, because a
+  quack catalog binds only the bare table name. Tables in other schemas on the
+  server stay reachable from the SQL editor only, and a query that scans two
+  quack tables at once (a self-join, say) fails on the server with *Multiple
+  streaming scans ... not currently supported*. The macro also runs any
+  statement of yours on the server:
 
   ```sql
   FROM remote.query('FROM duckdb_tables() WHERE NOT internal');
