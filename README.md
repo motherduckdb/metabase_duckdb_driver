@@ -103,9 +103,14 @@ instance over the [Quack remote protocol](https://duckdb.org/docs/stable/quack/o
 The `quack` extension in DuckDB's core repository carries the server
 (`quack_serve`) and the client from DuckDB 1.5.2 on; the driver version is the
 bundled DuckDB version plus a patch digit, so `1.5.2.0` is the first release
-with it. Verified with driver 1.5.6.0 against a DuckDB 1.5.5 server. DuckDB 2.0
-ships a reworked protocol and a `CONNECT` statement; neither exists in the
-1.5.x the driver bundles.
+with it. Verified with driver 1.5.6.0 against a DuckDB 1.5.5 server.
+
+**The server must run the same DuckDB major line as the driver.** DuckDB 2.0
+reworked the protocol and the two are not wire-compatible: a 1.5 client against
+a 2.0 server fails with `Serialization Error: Failed to deserialize: expected
+end of object, but found field id: 2`, and a 2.0 client gets `HTTP 500` from a
+1.5 server. Until a driver release bundles DuckDB 2.0, serve from a 1.5.x
+DuckDB.
 
 On the serving side, start the server from any DuckDB session. It prints the
 listen URL and the token:
