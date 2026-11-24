@@ -241,3 +241,38 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         build-args: |
           DUCKDB_DRIVER_URL=dist/duckdb.metabase-driver.jar
+
+  # The musl jars are for the official Alpine-based Metabase image, which no other job runs. Each is loaded there on
+  # a runner of its own architecture, since arm64 under emulation boots Metabase far too slowly.
+  musl-smoke:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    name: musl smoke (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/download-artifact@v8
+      with:
+        name: metabase-duckdb-driver-linux_${{ matrix.arch }}_musl
+        path: dist
+
+    # Alpine ships no C++ runtime, which the musl build of DuckDB still links against.
+    - name: Build Alpine image with the musl jar
+      run: |
+        metabase_version=$(jq -r 'sort_by(split(".") | map(tonumber)) | last' metabase_versions.json)
+        docker build -t metabase-duckdb:musl-smoke -f - dist <<EOF
+        FROM metabase/metabase:v$metabase_version
+        RUN apk add --no-cache libstdc++
+        COPY duckdb-linux_${{ matrix.arch }}_musl.metabase-driver.jar /plugins/duckdb.metabase-driver.jar
+        EOF
+
+    - name: Smoke test
+      run: python3 ci/smoke_image.py metabase-duckdb:musl-smoke

@@ -20,7 +20,7 @@ This driver is supported by [MotherDuck](https://motherduck.com/). If you would 
 | `duckdb-linux_amd64_musl.metabase-driver.jar` | musl-based Linux on x86_64 — most notably the **official Alpine-based Metabase Docker image** (`metabase/metabase`). |
 | `duckdb-linux_arm64_musl.metabase-driver.jar` | musl-based Linux on arm64 — the official Alpine-based Metabase image on Apple Silicon / arm64 hosts. |
 
-The musl variants bundle a DuckDB JNI binary built against musl libc, which is required when running inside Alpine Linux containers. Using `duckdb.metabase-driver.jar` (the glibc variant) on Alpine will fail to load with a glibc/loader error.
+The musl variants bundle a DuckDB JNI binary built against musl libc, which is required when running inside Alpine Linux containers. Using `duckdb.metabase-driver.jar` (the glibc variant) on Alpine will fail to load with a glibc/loader error. The musl variants still need the C++ runtime, which Alpine does not ship: install it with `apk add --no-cache libstdc++`.
 
 You can find past releases of the DuckDB driver [here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases), and releases earlier than 0.2.6 (corresponding to DuckDB v0.10.0) [here](https://github.com/AlexR2D2/metabase_duckdb_driver/releases).
 
@@ -387,7 +387,13 @@ That pivots correctly at every grouping level.
 
 The official Metabase image (`metabase/metabase`) is Alpine-based and uses musl libc. Historically the DuckDB driver could not load there because it shipped only a glibc JNI binary. There are now two ways to run the driver under Docker:
 
-1. **Use the official Alpine Metabase image with the musl driver jar.** Mount `duckdb-linux_amd64_musl.metabase-driver.jar` (or the `arm64` variant, depending on your host architecture) into the plugins directory. Rename it to `duckdb.metabase-driver.jar` inside the container if you prefer — Metabase loads any `*.jar` in the plugins dir.
+1. **Use the official Alpine Metabase image with the musl driver jar.** The image lacks the C++ runtime the driver needs, so mounting the jar alone fails with `Error loading shared library libstdc++.so.6`. Build a small image on top instead, with the `arm64` jar on arm64 hosts:
+
+   ```dockerfile
+   FROM metabase/metabase:v0.63.17
+   RUN apk add --no-cache libstdc++
+   COPY duckdb-linux_amd64_musl.metabase-driver.jar /plugins/duckdb.metabase-driver.jar
+   ```
 2. **Use the Debian-based image**, pre-built or built from the [Dockerfile](./Dockerfile) in this repo. This bundles the glibc `duckdb.metabase-driver.jar` and is the original supported setup.
 
 ### Pre-built images
