@@ -534,7 +534,8 @@
 (defn- quack-remote-query
   "Runs sql on the server behind the quack catalog db."
   [conn db sql]
-  (jdbc/query {:connection conn} [(format "select * from \"%s\".query('%s')" db (str/replace sql "'" "''"))]))
+  (jdbc/query {:connection conn} [(format "select * from \"%s\".query('%s')"
+                                          (str/replace db "\"" "\"\"") (str/replace sql "'" "''"))]))
 
 (def ^:private quack-schema-prefix "quack:")
 
@@ -563,7 +564,7 @@
                                                              "where database_name = current_database() "
                                                              "and schema_name = current_schema() and table_name = '%s' "
                                                              "order by column_index")
-                                                        table_name)))
+                                                        (str/replace table_name "'" "''"))))
          :let [base-type (sql-jdbc.sync/database-type->base-type driver (keyword data_type))]
          :when (some? base-type)]
      {:name              column_name
@@ -575,7 +576,7 @@
 (defmethod sql.qp/->honeysql [:duckdb ::h2x/identifier]
   [_driver [tag identifier-type components :as identifier]]
   ;; A quack catalog binds only the bare table name, so a table synced under a "quack:<catalog>" schema is
-  ;; addressed as catalog.table and its columns lose the qualifier Metabase would otherwise add.
+  ;; addressed as catalog.table and its columns are qualified by the table alone, without the schema.
   (if-let [catalog (quack-catalog (first components))]
     [tag identifier-type (case identifier-type
                            :table (into [catalog] (rest components))

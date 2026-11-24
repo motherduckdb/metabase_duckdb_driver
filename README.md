@@ -175,7 +175,7 @@ Things to know:
   Newer releases fetch the tables and columns of the server's default schema
   through the catalog's `query` macro. They appear under a schema named
   `quack:<catalog>`, and the compiler turns that into
-  `FROM "<catalog>"."<table>"` with unqualified column references, because a
+  `FROM "<catalog>"."<table>"` with columns qualified by the table alone, because a
   quack catalog binds only the bare table name. Tables in other schemas on the
   server stay reachable from the SQL editor only, and a query that scans two
   quack tables at once (a self-join, say) fails on the server with *Multiple
