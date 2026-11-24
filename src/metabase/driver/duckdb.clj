@@ -524,6 +524,65 @@
         args (into-array Object [])]
     (.rawConnectionOperation c3p0-conn clone-method raw-conn-token args)))
 
+(defn- quack-databases
+  "Names of the attached quack catalogs. DuckDB lists nothing for them in information_schema, so their tables
+   and columns are fetched from the server through the catalog's query macro."
+  [conn]
+  (map :database_name
+       (jdbc/query {:connection conn} ["select database_name from duckdb_databases() where type = 'quack'"])))
+
+(defn- quack-remote-query
+  "Runs sql on the server behind the quack catalog db."
+  [conn db sql]
+  (jdbc/query {:connection conn} [(format "select * from \"%s\".query('%s')" db (str/replace sql "'" "''"))]))
+
+(def ^:private quack-schema-prefix "quack:")
+
+(defn- quack-catalog
+  "The quack catalog behind a schema the sync recorded for one of its tables, nil for any other schema."
+  [schema]
+  (when (and schema (str/starts-with? schema quack-schema-prefix))
+    (subs schema (count quack-schema-prefix))))
+
+(defn- quack-tables
+  "Tables in the default schema of each quack server's current database, recorded under a \"quack:<catalog>\"
+   schema so the query compiler can tell them apart (see the identifier method below)."
+  [conn]
+  (for [db (quack-databases conn)
+        {:keys [table_name comment]}
+        (quack-remote-query conn db (str "select table_name, comment from duckdb_tables() where not internal "
+                                         "and database_name = current_database() and schema_name = current_schema()"))]
+    {:name table_name :schema (str quack-schema-prefix db) :description comment}))
+
+(defn- fields-from-quack
+  "Columns of table_name in the default schema of the quack catalog db, from the server."
+  [driver conn db table_name]
+  (set
+   (for [[idx {:keys [column_name data_type comment]}]
+         (m/indexed (quack-remote-query conn db (format (str "select column_name, data_type, comment from duckdb_columns() "
+                                                             "where database_name = current_database() "
+                                                             "and schema_name = current_schema() and table_name = '%s' "
+                                                             "order by column_index")
+                                                        table_name)))
+         :let [base-type (sql-jdbc.sync/database-type->base-type driver (keyword data_type))]
+         :when (some? base-type)]
+     {:name              column_name
+      :database-type     data_type
+      :base-type         base-type
+      :database-position idx
+      :field-comment     comment})))
+
+(defmethod sql.qp/->honeysql [:duckdb ::h2x/identifier]
+  [_driver [tag identifier-type components :as identifier]]
+  ;; A quack catalog binds only the bare table name, so a table synced under a "quack:<catalog>" schema is
+  ;; addressed as catalog.table and its columns lose the qualifier Metabase would otherwise add.
+  (if-let [catalog (quack-catalog (first components))]
+    [tag identifier-type (case identifier-type
+                           :table (into [catalog] (rest components))
+                           :field (vec (rest components))
+                           components)]
+    identifier))
+
 (defmethod driver/describe-database :duckdb
   [driver database]
   (let
@@ -549,13 +608,15 @@
           ;; Cloned connections don't inherit attachments, so we must run init SQL on them too.
           ;; This is critical for DuckLake where the catalog attachment is session-scoped.
           (ensure-init-sql! cloned-conn init-sql)
-          (set
-           (for [{:keys [table_catalog table_schema table_name table_comment]}
-                 (jdbc/query {:connection cloned-conn}
-                             [get_tables_query])]
-             {:name table_name
-              :schema table_schema
-              :description table_comment})))))}))
+          (into
+           (set
+            (for [{:keys [table_catalog table_schema table_name table_comment]}
+                  (jdbc/query {:connection cloned-conn}
+                              [get_tables_query])]
+              {:name table_name
+               :schema table_schema
+               :description table_comment}))
+           (quack-tables cloned-conn)))))}))
 
 (defn- split-composite-schema
   "Splits a composite schema 'catalog.schema' into [catalog schema].
@@ -617,7 +678,8 @@
         (with-open [^java.sql.Connection cloned-conn (clone-raw-connection conn)]
           (let [;; Cloned connections don't inherit attachments, so we must run init SQL on them too.
                 _ (ensure-init-sql! cloned-conn init-sql)
-                results (jdbc/query {:connection cloned-conn} [get_columns_query])
+                catalog (quack-catalog schema)
+                results (when-not catalog (jdbc/query {:connection cloned-conn} [get_columns_query]))
                 info-schema-fields
                 (set
                  (for [[idx {column_name :column_name, data_type :data_type, column_comment :column_comment}] (m/indexed results)
@@ -628,10 +690,10 @@
                     :base-type         base-type
                     :database-position idx
                     :field-comment     column_comment}))]
-            (if (seq info-schema-fields)
-              info-schema-fields
-              (do
-                (log/infof "No columns found in information_schema for %s.%s, falling back to DESCRIBE"
-                           schema table_name)
-                (fields-from-describe driver cloned-conn schema table_name)))))))}))
+            (or (not-empty info-schema-fields)
+                (when catalog (fields-from-quack driver cloned-conn catalog table_name))
+                (do
+                  (log/infof "No columns found in information_schema for %s.%s, falling back to DESCRIBE"
+                             schema table_name)
+                  (fields-from-describe driver cloned-conn schema table_name)))))))}))
 

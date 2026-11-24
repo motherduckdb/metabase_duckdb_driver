@@ -12,7 +12,15 @@ This driver is supported by [MotherDuck](https://motherduck.com/). If you would 
 
 ### Where to find it
 
-[Click here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest) to view the latest release of the Metabase DuckDB driver; click the link to download `duckdb.metabase-driver.jar`.
+[Click here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases/latest) to view the latest release of the Metabase DuckDB driver. Each release ships three JAR variants — pick the one that matches the libc of the host running Metabase:
+
+| File | When to use it |
+| --- | --- |
+| `duckdb.metabase-driver.jar` | glibc-based hosts: macOS, Windows, Debian/Ubuntu/RHEL Linux, the [Debian-based Metabase Docker image](./Dockerfile) in this repo. **This is what most users want.** |
+| `duckdb-linux_amd64_musl.metabase-driver.jar` | musl-based Linux on x86_64 — most notably the **official Alpine-based Metabase Docker image** (`metabase/metabase`). |
+| `duckdb-linux_arm64_musl.metabase-driver.jar` | musl-based Linux on arm64 — the official Alpine-based Metabase image on Apple Silicon / arm64 hosts. |
+
+The musl variants bundle a DuckDB JNI binary built against musl libc, which is required when running inside Alpine Linux containers. Using `duckdb.metabase-driver.jar` (the glibc variant) on Alpine will fail to load with a glibc/loader error. The musl variants still need the C++ runtime, which Alpine does not ship: install it with `apk add --no-cache libstdc++`.
 
 You can find past releases of the DuckDB driver [here](https://github.com/MotherDuck-Open-Source/metabase_duckdb_driver/releases), and releases earlier than 0.2.6 (corresponding to DuckDB v0.10.0) [here](https://github.com/AlexR2D2/metabase_duckdb_driver/releases).
 
@@ -95,6 +103,145 @@ ATTACH IF NOT EXISTS 'ducklake:postgres:dbname=catalog user=me password=secret h
   AS my_lake (DATA_PATH 's3://my-bucket/my_lake/');
 USE my_lake;
 ```
+
+## Quack (remote DuckDB server)
+
+Starting from driver version 1.5.2.0, Metabase can query another DuckDB
+instance over the [Quack remote protocol](https://duckdb.org/docs/stable/quack/overview.html).
+The `quack` extension in DuckDB's core repository carries the server
+(`quack_serve`) and the client from DuckDB 1.5.2 on; the driver version is the
+bundled DuckDB version plus a patch digit, so `1.5.2.0` is the first release
+with it. Verified with driver 1.5.6.0 against a DuckDB 1.5.5 server.
+
+**The server must run the same DuckDB major line as the driver.** DuckDB 2.0
+reworked the protocol and the two are not wire-compatible: a 1.5 client against
+a 2.0 server fails with `Serialization Error: Failed to deserialize: expected
+end of object, but found field id: 2`, and a 2.0 client gets `HTTP 500` from a
+1.5 server. Until a driver release bundles DuckDB 2.0, serve from a 1.5.x
+DuckDB.
+
+On the serving side, start the server from any DuckDB session. It prints the
+listen URL and the token:
+
+```sql
+CALL quack_serve('quack:localhost', token = 'MY_QUACK_TOKEN');
+```
+
+In Metabase, put the server URI in the **Database file** field, like `md:` or
+`ducklake:`:
+
+```
+quack:server.example.com:9494
+```
+
+The server is then the current database. Two things have to be in place before
+the connection opens, because nothing can run SQL earlier than that: the
+extension, since opening a `quack:` database does not autoinstall it (the
+connection test fails with `Extension "quack" not found ... Install it first`),
+and a persistent quack secret holding the token, which is how the token reaches
+a connection that has no `ATTACH` to carry it. Both live in the DuckDB home
+directory, which every data source of a Metabase shares.
+
+Under Docker, seed them at startup. The image has no DuckDB CLI, but
+`metabase.jar` carries `clojure.main` and the driver jar carries `duckdb_jdbc`,
+so an entrypoint script can run the driver's own DuckDB (same version, same
+home directory) before Metabase starts:
+
+```sh
+#!/bin/sh
+set -e
+if [ -n "$QUACK_TOKEN" ]; then
+  token=$(printf %s "$QUACK_TOKEN" | sed "s/'/''/g")
+  scope=""
+  if [ -n "$QUACK_URI" ]; then scope=", SCOPE '$QUACK_URI'"; fi
+  java -cp /home/metabase/metabase.jar:/home/metabase/plugins/duckdb.metabase-driver.jar clojure.main -e "
+    (Class/forName \"org.duckdb.DuckDBDriver\")
+    (with-open [c (java.sql.DriverManager/getConnection \"jdbc:duckdb:\")]
+      (.execute (.createStatement c)
+        \"INSTALL quack; CREATE OR REPLACE PERSISTENT SECRET quack_env (TYPE quack, TOKEN '$token'$scope);\"))"
+fi
+exec java -jar /home/metabase/metabase.jar
+```
+
+```bash
+docker run -d -p 3000:3000 \
+  -e QUACK_TOKEN=MY_QUACK_TOKEN -e QUACK_URI=quack:server.example.com:9494 \
+  -v "$PWD/entrypoint.sh:/entrypoint.sh:ro" --entrypoint /entrypoint.sh \
+  ghcr.io/motherduckdb/metabase-duckdb:latest
+```
+
+The seeding adds a few seconds to startup. The same hook serves any other
+one-time setup, such as pre-installing extensions or storing other persistent
+secrets. Outside Docker, run the two statements once from the SQL editor of
+any other DuckDB data source in the same Metabase:
+
+```sql
+INSTALL quack;
+CREATE PERSISTENT SECRET quack_prod (TYPE quack, TOKEN 'MY_QUACK_TOKEN', SCOPE 'quack:server.example.com:9494');
+```
+
+Things to know:
+
+- **Sync asks the server for its catalog.** DuckDB 1.5.x lists nothing for a
+  quack catalog in `duckdb_tables()` or `information_schema`, so on releases
+  up to 1.5.6.0 the data browser stays empty and only the SQL editor works.
+  Newer releases fetch the tables and columns of the server's default schema
+  through the catalog's `query` macro. They appear under a schema named
+  `quack:<catalog>`, and the compiler turns that into
+  `FROM "<catalog>"."<table>"` with unqualified column references, because a
+  quack catalog binds only the bare table name. Tables in other schemas on the
+  server stay reachable from the SQL editor only, and a query that scans two
+  quack tables at once (a self-join, say) fails on the server with *Multiple
+  streaming scans ... not currently supported*. The macro also runs any
+  statement of yours on the server:
+
+  ```sql
+  FROM "server.example.com:9494".query('FROM duckdb_tables() WHERE NOT internal');
+  ```
+- **A remote server needs TLS in front of it.** The client uses plain HTTP
+  for `localhost`, `127.0.0.1` and `::1`, HTTPS for every other host, and it
+  verifies the certificate. The 1.5.x server itself only speaks HTTP:
+  `quack_serve` has no certificate options and its `disable_ssl` flag changes
+  nothing on the listening side, so a server reached under any other name fails
+  with `SSL connect error for HTTP POST to 'https://...'`. Bind the server to
+  the loopback and put a TLS-terminating reverse proxy in front, as the DuckDB
+  docs recommend. A publicly trusted certificate needs nothing more; for a
+  private CA, hand the client the CA file through the Database file field:
+
+  ```
+  quack:server.example.com:9494?ca_cert_file=/certs/ca.pem
+  ```
+
+  For a server on the Docker Desktop host, skip TLS by making it `localhost`
+  inside the container: run a forwarder in the container's network namespace
+  and use `quack:localhost:9494` as the Database file. The host server must
+  listen on `127.0.0.1` (`quack:localhost` binds `[::1]` only, which
+  `host.docker.internal` does not reach):
+
+  ```bash
+  docker run -d --name quack_fwd --network container:metabase_duckdb \
+    alpine/socat TCP-LISTEN:9494,fork,reuseaddr TCP:host.docker.internal:9494
+  ```
+- **Use the single-colon URI.** Only `quack:host[:port]` reaches the
+  extension; `quack://host` is taken for a file path.
+
+### Attaching from Init SQL instead
+
+The server can also be attached in the **Init SQL** field of a data source
+that points at an ordinary database file, which is the only place with a
+`DISABLE_SSL` switch:
+
+```sql
+INSTALL quack; LOAD quack;
+ATTACH IF NOT EXISTS 'quack:host.docker.internal:9494' AS remote (TOKEN 'MY_QUACK_TOKEN', DISABLE_SSL true);
+```
+
+We do not recommend it. Init SQL is an ordinary text field: Metabase shows it
+unmasked to every admin and returns it verbatim from the API, unlike the token
+fields it treats as secrets, and like all connection details it is encrypted at
+rest only when `MB_ENCRYPTION_SECRET_KEY` is set. A token does not belong
+there. A server on the Docker Desktop host does not need it either, see the
+forwarder above.
 
 ## Init SQL
 
@@ -238,7 +385,16 @@ That pivots correctly at every grouping level.
 
 ## Docker
 
-Unfortunately, DuckDB plugin doesn't work in the default Alpine based Metabase docker container out of the box due to some glibc problems. But we provide a Debian-based Docker image of Metabase where the DuckDB plugin does work.
+The official Metabase image (`metabase/metabase`) is Alpine-based and uses musl libc. Historically the DuckDB driver could not load there because it shipped only a glibc JNI binary. There are now two ways to run the driver under Docker:
+
+1. **Use the official Alpine Metabase image with the musl driver jar.** The image lacks the C++ runtime the driver needs, so mounting the jar alone fails with `Error loading shared library libstdc++.so.6`. Build a small image on top instead, with the `arm64` jar on arm64 hosts:
+
+   ```dockerfile
+   FROM metabase/metabase:v0.63.17
+   RUN apk add --no-cache libstdc++
+   COPY duckdb-linux_amd64_musl.metabase-driver.jar /plugins/duckdb.metabase-driver.jar
+   ```
+2. **Use the Debian-based image**, pre-built or built from the [Dockerfile](./Dockerfile) in this repo. This bundles the glibc `duckdb.metabase-driver.jar` and is the original supported setup.
 
 ### Pre-built images
 
@@ -266,10 +422,10 @@ docker run --name metabase_duckdb -d -p 3000:3000 ghcr.io/motherduckdb/metabase-
 On Alpine the native DuckDB library fails to load — `Error loading shared
 library libstdc++.so.6` on the first attempt, then `Could not initialize class
 org.duckdb.DuckDBNative` on every attempt after. Installing packages does not
-fix it: `duckdb_jdbc` ships a glibc build and Alpine is musl. Use a glibc base
-image such as the one below.
+fix it: `duckdb_jdbc` ships a glibc build and Alpine is musl. Use one of the musl
+driver jars, or a glibc base image such as the one below.
 
-See the included [Dockerfile](./Dockerfile) for a complete setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
+See the included [Dockerfile](./Dockerfile) for the Debian-based setup. You can build the container like so, optionally with specific Metabase or DuckDB driver versions:
 
 ```bash
 # Build with default versions: the newest Metabase version in
@@ -319,7 +475,7 @@ Then run the **Release** workflow with the following parameters:
 - `version`: the first three numbers must match `duckdb_jdbc` in `deps.edn`, and the fourth counts driver releases on that DuckDB version (`1.5.6.0`, then `1.5.6.1` for a driver-only fix).
 - `dry_run`: run every check and smoke test, then only print the release command.
 
-The workflow fails if the tag already exists, the version does not match `deps.edn`, or the commit has no green `main` build. Otherwise it takes the jar from that build and smoke-tests it in an image for every version in `metabase_versions.json`. It then creates the tag `<version>` on the commit and publishes the release, titled `Metabase <newest listed> + DuckDB <x.y.z>`, with the jar attached and generated notes. `gh release create` publishes only after the jar is uploaded, so no release goes out without it. The images are pushed last; if a push fails, backfill it with **Build Container Images**.
+The workflow fails if the tag already exists, the version does not match `deps.edn`, or the commit has no green `main` build. Otherwise it takes the jar from that build and smoke-tests it in an image for every version in `metabase_versions.json`. It then creates the tag `<version>` on the commit and publishes the release, titled `Metabase <newest listed> + DuckDB <x.y.z>`, with the default and musl jars attached and generated notes. `gh release create` publishes only after the jars are uploaded, so no release goes out without them. The images are pushed last; if a push fails, backfill it with **Build Container Images**.
 
 The integration tests run with `continue-on-error`, so a green build does not mean they passed. Check their logs before releasing.
 
