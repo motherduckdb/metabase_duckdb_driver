@@ -8,6 +8,7 @@
    [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
    [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
    [metabase.driver.sql.query-processor :as sql.qp]
+   [metabase.driver.util :as driver.u]
    [metabase.query-processor :as qp]
    [metabase.sync.core :as sync]
    [metabase.test :as mt]
@@ -69,18 +70,20 @@
   [db schema]
   (testing "tables and columns are fetched from the server, since DuckDB lists nothing for a quack catalog in
            information_schema"
-    (is (contains? (:tables (driver/describe-database :duckdb db))
+    (is (contains? (:tables (driver/describe-database :duckdb (driver.u/ensure-lib-database db)))
                    {:name "events", :schema schema, :description nil}))
     (is (= [{:name "id", :database-type "INTEGER", :base-type :type/Integer}
             {:name "name", :database-type "VARCHAR", :base-type :type/Text}]
-           (->> (driver/describe-table :duckdb db {:name "events", :schema schema})
+           (->> (driver/describe-table :duckdb (driver.u/ensure-lib-database db) {:name "events", :schema schema})
                 :fields
                 (sort-by :database-position)
                 (map #(select-keys % [:name :database-type :base-type]))))))
   (testing "a quote in a table name is escaped in the SQL sent to the server"
-    (is (= ["n"] (map :name (:fields (driver/describe-table :duckdb db {:name "it's", :schema schema}))))))
+    (is (= ["n"] (->> (driver/describe-table :duckdb (driver.u/ensure-lib-database db) {:name "it's", :schema schema})
+                      :fields
+                      (map :name)))))
   (testing "a synced table can be queried"
-    (sync/sync-database! db {:scan :schema})
+    (sync/sync-database! (:id db) {:scan :schema})
     (is (= [[1 "a"]]
            (mt/rows (qp/process-query
                      {:database (:id db)
@@ -101,7 +104,7 @@
              (try
                (check-quack-sync-and-query db uri)
                (finally
-                 (sql-jdbc.conn/invalidate-pool-for-db! db))))
+                 (sql-jdbc.conn/invalidate-pool-for-db! (:id db)))))
            (finally
              (jdbc/execute! {:connection conn} ["DROP PERSISTENT SECRET quack_test"]))))))))
 
@@ -119,7 +122,7 @@
            (try
              (check-quack-sync-and-query db "quack:remote")
              (finally
-               (sql-jdbc.conn/invalidate-pool-for-db! db)))))))))
+               (sql-jdbc.conn/invalidate-pool-for-db! (:id db))))))))))
 
 (deftest ^:parallel quack-identifier-test
   (testing "a table synced from a quack catalog is addressed as catalog.table and its columns are qualified by the
